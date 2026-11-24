@@ -1,0 +1,16 @@
+[general]
+name=Kartenwerk
+qgisMinimumVersion=3.28
+description=A5 1:25.000 map series: topographic front, mirrored aerial back, interactive sheet selection.
+version=1.0.0
+author=Kartenwerk
+email=
+about=Creates A5 landscape 1:25.000 map sheets from TopPlusOpen and LGL-BW DOP20. Draw a working area, generate a 4.85 x 3.30 km grid, select the sheets you want, and export two-page PDFs (front topo / mirrored aerial back) with UTM grid, coordinates and neighbour indicators.
+repository=
+tracker=
+homepage=
+category=Plugins
+experimental=False
+deprecated=False
+tags=map,atlas,print,topography,aerial,utm
+icon=
