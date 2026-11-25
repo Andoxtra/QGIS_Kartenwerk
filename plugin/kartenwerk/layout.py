@@ -36,7 +36,7 @@ from qgis.core import (
 from . import config, crs as crs_mod
 
 LAYOUT_NAME = "Kartenwerk"
-LAYOUT_VERSION = "3"  # bump when the border design changes, so saved layouts are rebuilt
+LAYOUT_VERSION = "4"  # bump when the border design changes, so saved layouts are rebuilt
 LEGACY_LAYOUTS = ("Vorderseite", "Rueckseite")
 SIDES = ("front", "back")  # page 0, page 1
 _MM = QgsUnitTypes.LayoutMillimeters
@@ -44,10 +44,38 @@ _PROP = "kartenwerk_signature"
 
 GREY = "#555555"
 LIGHT_GREY = "#8a8a8a"
-_LOCATOR_H = 6.4  # mm
-_LOCATOR_MAX_W = 30.0  # mm, reserved at the bottom right
-_SIDE_LABEL_LEN = 30.0  # mm, rotated neighbour label box
-_KM_ROW_H = 1.8  # mm
+# Border dimensions on A5 in mm; multiplied by the page's text scale (see u()).
+_LOCATOR_H = 6.4
+_LOCATOR_MAX_W = 30.0  # reserved at the bottom right
+_SIDE_LABEL_LEN = 30.0  # rotated neighbour label box
+_KM_ROW_H = 1.8
+
+# Text/lane scale of the page being built (config.TEXT_SCALE); set by _use_scale().
+_K = 1.0
+
+
+def _use_scale(geom: config.PageGeometry) -> None:
+    global _K
+    _K = geom.text_scale
+
+
+def u(value: float) -> float:
+    """A border dimension in mm, scaled for the current page format."""
+    return value * _K
+
+
+class Slot:
+    """Where one side of one sheet goes: page index, vertical offset and item-id prefix."""
+
+    def __init__(self, side: str, page: int, y0: float = 0.0, prefix: str | None = None):
+        self.side = side
+        self.page = page
+        self.y0 = y0
+        self.prefix = prefix if prefix is not None else f"{side}_"
+
+
+def default_slot(side: str) -> Slot:
+    return Slot(side, SIDES.index(side))
 
 
 # ---------------------------------------------------------------------------
@@ -55,14 +83,15 @@ _KM_ROW_H = 1.8  # mm
 # ---------------------------------------------------------------------------
 def _font(size: float = 7, bold: bool = False) -> QFont:
     font = QFont()  # platform default family: available on Linux, Windows and macOS
-    font.setPointSizeF(size)
+    font.setPointSizeF(size * _K)
     font.setBold(bold)
     return font
 
 
 def _span(text: str, size: float, bold: bool = False, color: str = "#000000") -> str:
     weight = "bold" if bold else "normal"
-    return f"<span style='font-size:{size}pt;font-weight:{weight};color:{color}'>{text}</span>"
+    return (f"<span style='font-size:{size * _K:.2f}pt;font-weight:{weight};color:{color}'>"
+            f"{text}</span>")
 
 
 def _label(
@@ -100,9 +129,10 @@ def _rect(layout, item_id: str, x: float, y: float, w: float, h: float, page: in
     shape = QgsLayoutItemShape(layout)
     shape.setId(item_id)
     shape.setShapeType(QgsLayoutItemShape.Rectangle)
-    shape.setSymbol(QgsFillSymbol.createSimple(
-        {"color": fill, "outline_color": "black", "outline_width": str(stroke),
-         "outline_width_unit": "MM"}))
+    outline = {"outline_color": "black", "outline_width": str(stroke), "outline_width_unit": "MM"}
+    if stroke <= 0:
+        outline = {"outline_style": "no"}
+    shape.setSymbol(QgsFillSymbol.createSimple({"color": fill, **outline}))
     layout.addLayoutItem(shape)
     shape.attemptResize(QgsLayoutSize(w, h, _MM))
     shape.attemptMove(QgsLayoutPoint(x, y, _MM), True, False, page)
@@ -111,7 +141,7 @@ def _rect(layout, item_id: str, x: float, y: float, w: float, h: float, page: in
 
 def scale_bar_length(geom: config.PageGeometry) -> tuple[float, float]:
     """(ground metres, paper mm) of the scale bar: the longest round length that fits."""
-    limit = min(80.0, geom.page_w * 0.25)
+    limit = min(80.0 * geom.text_scale, geom.page_w * 0.25)
     for metres in (5000, 2000, 1000, 500, 250, 200, 100):
         mm = metres * geom.mm_per_m()
         if mm <= limit:
@@ -126,83 +156,88 @@ def _distance_text(metres: float) -> str:
 # ---------------------------------------------------------------------------
 # layout construction
 # ---------------------------------------------------------------------------
-def _add_scale_bar(layout, p: str, page: int, geom: config.PageGeometry) -> None:
+def _add_scale_bar(layout, slot: Slot, geom: config.PageGeometry) -> None:
+    p, page, y0 = slot.prefix, slot.page, slot.y0
     metres, length = scale_bar_length(geom)
     x0 = geom.map_x
-    bar_y = geom.bottom + 4.4
+    bottom = geom.bottom + y0
     segments = 4
     seg = length / segments
     for i in range(segments):
-        _rect(layout, f"{p}sb_seg{i}", x0 + i * seg, bar_y, seg, 1.1, page,
-              "black" if i % 2 == 0 else "white")
+        _rect(layout, f"{p}sb_seg{i}", x0 + i * seg, bottom + u(4.4), seg, u(1.1), page,
+              "black" if i % 2 == 0 else "white", stroke=0.15 * _K)
     for i, frac in enumerate((0.0, 0.5, 1.0)):
         value = metres * frac
         text = _distance_text(value) if frac == 1.0 else f"{value / 1000:g}" if metres >= 1000 \
             else f"{value:g}"
         if frac == 0.0:  # left-aligned at the bar start, so the box stays in the safe zone
-            x, align = x0 - 0.4, Qt.AlignLeft
+            x, align = x0 - u(0.4), Qt.AlignLeft
         else:
-            x, align = x0 + length * frac - 8.0, Qt.AlignCenter
+            x, align = x0 + length * frac - u(8.0), Qt.AlignCenter
         _label(layout, f"{p}sb_lbl{i}", _span(text, 5, color=GREY),
-               x, geom.bottom + 2.5, 16.0, 1.8, page=page, align=align)
+               x, bottom + u(2.5), u(16.0), u(1.8), page=page, align=align)
     _label(layout, f"{p}scale", _span(config.format_scale(geom.scale), 7.5, bold=True),
-           x0 + length + 8.0, geom.bottom + 2.9, 22.0, 3.2, page=page, align=Qt.AlignLeft)
+           x0 + length + u(8.0), bottom + u(2.9), u(22.0), u(3.2), page=page, align=Qt.AlignLeft)
 
 
-def _add_side(layout: QgsPrintLayout, side: str, page: int) -> None:
-    geom = config.page_geometry()
-    p = f"{side}_"
+def _add_side(layout: QgsPrintLayout, slot: Slot, geom: config.PageGeometry) -> None:
+    p, page, y0 = slot.prefix, slot.page, slot.y0
     safe = config.SAFE_MM
+    top = y0 + safe
+    bottom = y0 + geom.bottom
+    map_y = y0 + geom.map_y
 
     # Map picture with a thin neatline.
     picture = QgsLayoutItemPicture(layout)
     picture.setId(p + "map_picture")
     picture.setResizeMode(QgsLayoutItemPicture.Stretch)
     picture.setFrameEnabled(True)
-    picture.setFrameStrokeWidth(QgsLayoutMeasurement(0.3, _MM))
+    picture.setFrameStrokeWidth(QgsLayoutMeasurement(u(0.3), _MM))
     picture.setFrameStrokeColor(QColor("black"))
     layout.addLayoutItem(picture)
     picture.attemptResize(QgsLayoutSize(geom.map_w, geom.map_h, _MM))
-    picture.attemptMove(QgsLayoutPoint(geom.map_x, geom.map_y, _MM), True, False, page)
+    picture.attemptMove(QgsLayoutPoint(geom.map_x, map_y, _MM), True, False, page)
 
     # --- top row -------------------------------------------------------------
-    row_h = geom.map_y - _KM_ROW_H - 0.2 - safe
-    _label(layout, p + "title", "", geom.map_x, safe, geom.page_w * 0.4, row_h,
+    row_h = geom.map_y - u(_KM_ROW_H) - u(0.2) - safe
+    _label(layout, p + "title", "", geom.map_x, top, geom.page_w * 0.42, row_h,
            page=page, align=Qt.AlignLeft)
-    _label(layout, p + "neighbor_top", "", geom.page_w / 2 - 20, safe, 40, row_h, page=page)
-    north_w = 62.0
-    _label(layout, p + "north", "", geom.right - north_w, safe, north_w, row_h,
+    _label(layout, p + "neighbor_top", "", geom.page_w / 2 - u(20), top, u(40), row_h, page=page)
+    north_w = u(62.0)
+    _label(layout, p + "north", "", geom.right - north_w, top, north_w, row_h,
            page=page, align=Qt.AlignRight)
 
     # --- sides: neighbours, rotated to read upwards on both sides --------------
     lane_cx_left = (safe + geom.map_x) / 2.0
     lane_cx_right = geom.page_w - lane_cx_left
-    cy = geom.map_y + geom.map_h / 2.0
+    cy = map_y + geom.map_h / 2.0
+    length = u(_SIDE_LABEL_LEN)
     for name, cx in (("neighbor_left", lane_cx_left), ("neighbor_right", lane_cx_right)):
-        _label(layout, p + name, "", cx - _SIDE_LABEL_LEN / 2, cy - 2.0, _SIDE_LABEL_LEN, 4.0,
+        _label(layout, p + name, "", cx - length / 2, cy - u(2.0), length, u(4.0),
                page=page, rotation=-90)
 
     # --- bottom rows -----------------------------------------------------------
-    _add_scale_bar(layout, p, page, geom)
-    _label(layout, p + "neighbor_bottom", "", geom.page_w / 2 - 20, geom.bottom + 2.6, 40, 3.8,
-           page=page)
-    coord_right = geom.right - _LOCATOR_MAX_W - 2.0
-    _label(layout, p + "coord", "", coord_right - 70, geom.bottom + 2.8, 70, 2.8,
+    _add_scale_bar(layout, slot, geom)
+    _label(layout, p + "neighbor_bottom", "", geom.page_w / 2 - u(20), bottom + u(2.6), u(40),
+           u(3.8), page=page)
+    coord_right = geom.right - u(_LOCATOR_MAX_W) - u(2.0)
+    _label(layout, p + "coord", "", coord_right - u(70), bottom + u(2.8), u(70), u(2.8),
            page=page, align=Qt.AlignRight)
-    _label(layout, p + "source", "", geom.map_x, geom.bottom + 6.6,
-           coord_right - geom.map_x, 2.3, page=page, align=Qt.AlignLeft)
+    _label(layout, p + "source", "", geom.map_x, bottom + u(6.6),
+           coord_right - geom.map_x, u(2.3), page=page, align=Qt.AlignLeft)
 
     locator = QgsLayoutItemPicture(layout)
     locator.setId(p + "locator")
     locator.setResizeMode(QgsLayoutItemPicture.Stretch)
     layout.addLayoutItem(locator)
-    locator.attemptResize(QgsLayoutSize(_LOCATOR_H, _LOCATOR_H, _MM))
-    locator.attemptMove(QgsLayoutPoint(geom.right - _LOCATOR_H, geom.bottom + 2.4, _MM),
+    locator.attemptResize(QgsLayoutSize(u(_LOCATOR_H), u(_LOCATOR_H), _MM))
+    locator.attemptMove(QgsLayoutPoint(geom.right - u(_LOCATOR_H), bottom + u(2.4), _MM),
                         True, False, page)
 
 
 def _create_layout(project: QgsProject) -> QgsPrintLayout:
     geom = config.page_geometry()
+    _use_scale(geom)
     layout = QgsPrintLayout(project)
     layout.setName(LAYOUT_NAME)
     layout.initializeDefaults()
@@ -212,8 +247,8 @@ def _create_layout(project: QgsProject) -> QgsPrintLayout:
     back_page.setPageSize(QgsLayoutSize(geom.page_w, geom.page_h, _MM))
     pages.addPage(back_page)
 
-    for page, side in enumerate(SIDES):
-        _add_side(layout, side, page)
+    for side in SIDES:
+        _add_side(layout, default_slot(side), geom)
 
     layout.setCustomProperty(_PROP, _signature())
     project.layoutManager().addLayout(layout)
@@ -248,6 +283,53 @@ def ensure_layout(project: QgsProject, force: bool = False) -> QgsPrintLayout:
 
 
 # ---------------------------------------------------------------------------
+# "two sheets per page" print file
+# ---------------------------------------------------------------------------
+def two_up_layout(project: QgsProject, count: int) -> tuple[QgsPrintLayout, list[tuple[Slot, Slot]]]:
+    """Layout with two sheets stacked on the next larger paper (portrait).
+
+    Page 2k holds the fronts of sheets 2k and 2k+1 (top, bottom), page 2k+1 their
+    backs in the same positions: duplex printing with "flip on long edge" turns the
+    paper about its vertical axis, which keeps top and bottom, so every back lands
+    behind its front. Returns the layout (not added to the project) and the
+    (front slot, back slot) of each sheet.
+    """
+    geom = config.page_geometry()
+    _use_scale(geom)
+    paper = config.TWO_UP_PAPER[geom.name]
+    paper_h, paper_w = config.PAGE_FORMATS[paper]  # portrait: long side vertical
+    layout = QgsPrintLayout(project)
+    layout.setName(f"Kartenwerk 2-up {paper}")
+    layout.initializeDefaults()
+    pages = layout.pageCollection()
+    pairs = (count + 1) // 2
+    for index in range(pairs * 2):
+        page = pages.page(0) if index == 0 else QgsLayoutItemPage(layout)
+        page.setPageSize(QgsLayoutSize(paper_w, paper_h, _MM))
+        if index:
+            pages.addPage(page)
+
+    half = paper_h / 2.0
+    offsets = ((half - geom.page_h) / 2.0, half + (half - geom.page_h) / 2.0)
+    slots = []
+    for i in range(count):
+        pair, pos = divmod(i, 2)
+        front = Slot("front", 2 * pair, offsets[pos], f"s{i}f_")
+        back = Slot("back", 2 * pair + 1, offsets[pos], f"s{i}b_")
+        _add_side(layout, front, geom)
+        _add_side(layout, back, geom)
+        slots.append((front, back))
+
+    # Cut marks on the front pages, inside the printable area at both paper edges.
+    mark = u(6.0)
+    for pair in range(pairs):
+        for x in (config.SAFE_MM, paper_w - config.SAFE_MM - mark):
+            _rect(layout, f"cut{pair}_{int(x)}", x, half - 0.1, mark, 0.2, 2 * pair, "black",
+                  stroke=0)
+    return layout, slots
+
+
+# ---------------------------------------------------------------------------
 # per-sheet content
 # ---------------------------------------------------------------------------
 def sheet_number_text(sheet: dict, missing: str = "") -> str:
@@ -278,13 +360,15 @@ def _neighbour_html(neighbour: dict | None, arrow: str) -> str:
 
 def _title_html(sheet: dict, side: str) -> str:
     number = sheet_number_text(sheet)
-    label = html.escape(str(sheet.get("sheet_name") or sheet["sheet_id"]))
+    name = str(sheet.get("sheet_name") or "").strip()
+    sheet_id = html.escape(str(sheet["sheet_id"]))
     parts = []
     if number:
-        parts.append(_span(number, 12, bold=True))
-        parts.append(_span(f"&nbsp;&nbsp;{label}", 6.5, color=GREY))
-    else:
-        parts.append(_span(label, 9, bold=True))
+        parts.append(_span(number, 12, bold=True) + "&nbsp;&nbsp;")
+    if name:
+        parts.append(_span(html.escape(name), 9 if number else 10, bold=True) + "&nbsp;&nbsp;")
+    parts.append(_span(sheet_id, 6.5, color=GREY) if (number or name)
+                 else _span(sheet_id, 9, bold=True))
     if side == "back":
         parts.append(_span("&nbsp;· aerial image, mirrored for duplex", 6.5, color=GREY))
     return "".join(parts)
@@ -333,9 +417,10 @@ def _remove_items(layout: QgsPrintLayout, prefix: str) -> None:
             layout.removeLayoutItem(item)
 
 
-def _add_km_labels(layout, side: str, page: int, extent, geom: config.PageGeometry) -> None:
+def _add_km_labels(layout, slot: Slot, extent, geom: config.PageGeometry) -> None:
     """Kilometre labels in the border at every 1 km grid line (rebuilt per sheet)."""
-    p = f"{side}_km_"
+    p = f"{slot.prefix}km_"
+    page, y0 = slot.page, slot.y0
     _remove_items(layout, p)
     safe = config.SAFE_MM
     spacing = config.GRID_SPACING_M
@@ -346,33 +431,33 @@ def _add_km_labels(layout, side: str, page: int, extent, geom: config.PageGeomet
     i = 0
     while e <= extent.xMaximum():
         x = geom.map_x + (e - extent.xMinimum()) * sx
-        if side == "back":  # the back image is mirrored left↔right
+        if slot.side == "back":  # the back image is mirrored left↔right
             x = geom.map_x + geom.map_w - (x - geom.map_x)
-        w = 8.0
+        w = u(8.0)
         if x - w / 2 >= safe and x + w / 2 <= geom.page_w - safe:
             text = _km_html(e)
-            _label(layout, f"{p}e{i}t", text, x - w / 2, geom.map_y - _KM_ROW_H - 0.2, w, _KM_ROW_H,
-                   page=page)
-            _label(layout, f"{p}e{i}b", text, x - w / 2, geom.bottom + 0.3, w, _KM_ROW_H,
-                   page=page)
+            _label(layout, f"{p}e{i}t", text, x - w / 2,
+                   y0 + geom.map_y - u(_KM_ROW_H) - u(0.2), w, u(_KM_ROW_H), page=page)
+            _label(layout, f"{p}e{i}b", text, x - w / 2, y0 + geom.bottom + u(0.3), w,
+                   u(_KM_ROW_H), page=page)
         e += spacing
         i += 1
 
     n = math.ceil(extent.yMinimum() / spacing) * spacing
     i = 0
     mid = geom.map_y + geom.map_h / 2.0
-    lane_w = geom.map_x - 0.5 - safe
+    lane_w = geom.map_x - u(0.5) - safe
     while n <= extent.yMaximum():
         y = geom.map_y + (extent.yMaximum() - n) * sy
-        h = 2.4
+        h = u(2.4)
         # Keep clear of the rotated side neighbours and of the page corners.
-        if abs(y - mid) > _SIDE_LABEL_LEN / 2 - 6.0 and y - h / 2 >= geom.map_y - 1.0 \
-                and y + h / 2 <= geom.bottom + 1.0:
+        if abs(y - mid) > u(_SIDE_LABEL_LEN / 2 - 6.0) and y - h / 2 >= geom.map_y - u(1.0) \
+                and y + h / 2 <= geom.bottom + u(1.0):
             text = _km_html(n)
-            _label(layout, f"{p}n{i}l", text, safe, y - h / 2, lane_w, h, page=page,
+            _label(layout, f"{p}n{i}l", text, safe, y0 + y - h / 2, lane_w, h, page=page,
                    align=Qt.AlignRight)
-            _label(layout, f"{p}n{i}r", text, geom.right + 0.5, y - h / 2, lane_w, h, page=page,
-                   align=Qt.AlignLeft)
+            _label(layout, f"{p}n{i}r", text, geom.right + u(0.5), y0 + y - h / 2, lane_w, h,
+                   page=page, align=Qt.AlignLeft)
         n += spacing
         i += 1
 
@@ -426,15 +511,18 @@ def update_side(
     neighbour: dict,
     source_text: str,
     info: dict,
+    slot: Slot | None = None,
 ) -> list[Path]:
-    """Fill one page for one sheet. Returns temporary files to delete after the PDF export.
+    """Fill one side of one sheet. Returns temporary files to delete after the PDF export.
 
     ``info`` keys: extent (rendered QgsRectangle), sheets (all exported sheets, for the
-    locator), convergence, grid_magnetic (or None), year, date.
+    locator), convergence, grid_magnetic (or None), year, date, run.
+    ``slot`` defaults to the side's page in the two-page sheet layout.
     """
     geom = config.page_geometry()
-    page = SIDES.index(side)
-    p = f"{side}_"
+    _use_scale(geom)
+    slot = slot or default_slot(side)
+    p = slot.prefix
     extent = info["extent"]
 
     picture = layout.itemById(p + "map_picture")
@@ -454,7 +542,7 @@ def update_side(
     layout.itemById(p + "neighbor_left").setText(_neighbour_html(left, "▲"))
     layout.itemById(p + "neighbor_right").setText(_neighbour_html(right, "▼"))
 
-    _add_km_labels(layout, side, page, extent, geom)
+    _add_km_labels(layout, slot, extent, geom)
 
     # Locator diagram, right-aligned in its reserved box.
     aspect = geom.cell_w / geom.cell_h
@@ -463,16 +551,17 @@ def update_side(
     # could show a stale image.
     path = config.cache_dir() / f"locator_{info.get('run', '')}{sheet['sheet_id']}_{side}.png"
     image.save(str(path))
-    h = _LOCATOR_H
+    h = u(_LOCATOR_H)
     w = h * image.width() / image.height()
-    if w > _LOCATOR_MAX_W:
-        w, h = _LOCATOR_MAX_W, _LOCATOR_MAX_W * image.height() / image.width()
+    if w > u(_LOCATOR_MAX_W):
+        w, h = u(_LOCATOR_MAX_W), u(_LOCATOR_MAX_W) * image.height() / image.width()
     locator = layout.itemById(p + "locator")
     locator.setPicturePath(str(path))
     locator.refreshPicture()
     locator.attemptResize(QgsLayoutSize(w, h, _MM))
-    locator.attemptMove(QgsLayoutPoint(geom.right - w, geom.bottom + 2.4 + (_LOCATOR_H - h) / 2,
-                                       _MM), True, False, page)
+    locator.attemptMove(
+        QgsLayoutPoint(geom.right - w, slot.y0 + geom.bottom + u(2.4) + (u(_LOCATOR_H) - h) / 2,
+                       _MM), True, False, slot.page)
     return [path]
 
 
@@ -578,7 +667,8 @@ def _overview_legend_html(sheets: list[dict], columns: int = 4) -> str:
 
     body = "<table width='100%' cellspacing='0' cellpadding='2'><tr>"
     for col in cols:
-        body += "<td valign='top' style='font-size:6pt'>" + "<br/>".join(col) + "</td>"
+        body += (f"<td valign='top' style='font-size:{6 * _K:.2f}pt'>" + "<br/>".join(col)
+                 + "</td>")
     return body + "</tr></table>"
 
 
@@ -589,6 +679,7 @@ def export_overview(
     dpi: int = config.DPI,
 ) -> Path:
     geom = config.page_geometry()
+    _use_scale(geom)
     aspect = geom.cell_w / geom.cell_h
     image, grid_rows, grid_cols = _overview_image(sheets, aspect)
     zone = crs_mod.zone_label(int(sheets[0]["utm_zone"]), str(sheets[0]["hemisphere"]))
@@ -604,7 +695,7 @@ def export_overview(
         _span("Sheet overview", 12, bold=True)
         + _span(f" · {len(sheets)} sheets · {config.format_scale(geom.scale)} · UTM {zone}"
                 f"{overlap} · north up", 8, color=GREY),
-        margin, margin, geom.page_w - 2 * margin, 8.0, align=Qt.AlignLeft,
+        margin, margin, geom.page_w - 2 * margin, u(8.0), align=Qt.AlignLeft,
     )
 
     avail_w = geom.page_w - 2 * margin
@@ -613,7 +704,7 @@ def export_overview(
     diag_w = cell_h_mm * aspect * grid_cols
     diag_h = cell_h_mm * grid_rows
     diag_x = (geom.page_w - diag_w) / 2.0
-    diag_y = margin + 10.0
+    diag_y = margin + u(10.0)
 
     tmp = config.cache_dir() / f"overview_{uuid.uuid4().hex[:8]}.png"  # unique: QGIS caches by path
     image.save(str(tmp))
@@ -629,11 +720,11 @@ def export_overview(
     legend_y = diag_y + diag_h + 3.0
     _label(
         layout, "overview_legend", _overview_legend_html(sheets),
-        margin, legend_y, geom.page_w - 2 * margin, (geom.page_h - margin - 3.0) - legend_y,
+        margin, legend_y, geom.page_w - 2 * margin, (geom.page_h - margin - u(3.0)) - legend_y,
         align=Qt.AlignLeft, valign=Qt.AlignTop,
     )
     _label(layout, "overview_date", _span(f"Printed {today()}", 5, color=GREY),
-           margin, geom.page_h - margin - 2.5, 60, 2.5, align=Qt.AlignLeft)
+           margin, geom.page_h - margin - u(2.5), u(60), u(2.5), align=Qt.AlignLeft)
 
     try:
         return export_pdf(layout, Path(out_path), dpi)

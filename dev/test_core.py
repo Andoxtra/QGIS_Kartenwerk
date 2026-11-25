@@ -5,11 +5,13 @@ Exports a few sheets in several regions of the world and checks zones, sources,
 two-page PDFs, the overview orientation and a UTM zone switch.
 
     QT_QPA_PLATFORM=offscreen python3 dev/test_core.py [region ...]
+    QT_QPA_PLATFORM=offscreen python3 dev/test_core.py --offline   # no downloads (CI)
 
 Regions: bw nl us jp nz fallback lu bz westland
 """
 import csv
 import os
+import re
 import shutil
 import sys
 import traceback
@@ -151,11 +153,29 @@ def layout_checks(fmt, scale_denom):
     row = int((geom.map_y + geom.map_h * 0.37) * px)
     values = [page.pixelColor(x, row).lightness()
               for x in range(int(geom.map_x * px) + 3, int(geom.right * px) - 3)]
-    lines = runs(values, lambda v: v < 120)
+    lines = runs(values, lambda v: v < 200)  # thin lines on white; resampling lightens them
     gaps = [(b - a) / px for a, b in zip(lines, lines[1:])]
     expected = config.GRID_SPACING_M * geom.mm_per_m()
     check(f"{fmt}: 1 km grid spacing on paper = {expected:.2f} mm",
           gaps and all(abs(g - expected) < 0.25 for g in gaps), [round(g, 2) for g in gaps])
+
+    if fmt in config.TWO_UP_PAPER:
+        two, slots = layout.two_up_layout(project, 3)  # odd count: last page pair half empty
+        for i, (front_slot, back_slot) in enumerate(slots):
+            for side, slot in (("front", front_slot), ("back", back_slot)):
+                layout.update_side(two, side, {**sheet, "sheet_no": i + 1}, img_path, neighbour,
+                                   "© Test", info, slot)
+        paper_h, paper_w = config.PAGE_FORMATS[config.TWO_UP_PAPER[fmt]]
+        size = two.pageCollection().page(0).pageSize()
+        check(f"{fmt}: 2-per-page layout on {config.TWO_UP_PAPER[fmt]} portrait, 4 pages",
+              two.pageCollection().pageCount() == 4 and abs(size.width() - paper_w) < 0.01
+              and abs(size.height() - paper_h) < 0.01)
+        bad = safe_zone_violations(two)
+        check(f"{fmt}: 2-per-page items inside the safe zone", not bad, bad[:5])
+        front_b = slots[1][0].y0
+        back_b = slots[1][1].y0
+        check(f"{fmt}: 2-per-page back sits behind its front", front_b == back_b
+              and slots[1][1].page == slots[1][0].page + 1)
 
     metres, length = layout.scale_bar_length(geom)
     bar_row = int((geom.bottom + 4.95) * px)
@@ -168,15 +188,32 @@ def layout_checks(fmt, scale_denom):
 
 
 def legacy_migration(work: Path):
+    """A version-1 GeoPackage ('arbeitsgebiet', EPSG:25832) must migrate to 'work_area'."""
+    from qgis.PyQt.QtCore import QVariant
+    from qgis.core import QgsField
     print("== legacy migration", flush=True)
     gpkg = work / "legacy.gpkg"
-    shutil.copy(ROOT / "kartenwerk.gpkg", gpkg)
+    gpkg.unlink(missing_ok=True)
+    old = grid._write_layer(gpkg, "arbeitsgebiet", "EPSG:25832", [
+        QgsField("name", QVariant.String, "string", 80),
+        QgsField("bemerkung", QVariant.String, "string", 200)])
+    feats = []
+    for i, e in enumerate((440_000, 446_000)):
+        feat = QgsFeature(old.fields())
+        feat.setGeometry(QgsGeometry.fromRect(QgsRectangle(e, 5_320_000, e + 2_000, 5_322_000)))
+        feat["name"] = f"Area {i}"  # by name: GeoPackage layers start with an 'fid' column
+        feat["bemerkung"] = "old note"
+        feats.append(feat)
+    old.dataProvider().addFeatures(feats)
+    del old
     project = QgsProject.instance()
     project.clear()
     aoi = grid.ensure_aoi_layer(project, gpkg)
     check("migrated AOI name", aoi.name() == config.AOI_LAYER, aoi.name())
     check("migrated AOI CRS", aoi.crs().authid() == "EPSG:4326", aoi.crs().authid())
-    check("migrated AOI features", aoi.featureCount() == 6, aoi.featureCount())
+    check("migrated AOI features", aoi.featureCount() == 2, aoi.featureCount())
+    notes = sorted(f["note"] for f in aoi.getFeatures())
+    check("migrated 'bemerkung' → 'note'", notes == ["old note", "old note"], notes)
     grid_layer, count, _ = grid.generate_grid(project, aoi, gpkg_path=gpkg)
     check("legacy AOI → zone 32N", crs.zone_label(*grid.grid_zone(grid_layer)) == "32N")
 
@@ -206,6 +243,11 @@ def run_region(name, work: Path, project, aoi, gpkg):
     check(f"{name}: PDFs written", len(written) == len(ids), [p.name for p in written])
     for warning in written.warnings:
         print("   warning:", warning)
+    if name == "bw":
+        prints = list(out.glob("Print_2-per-page_*.pdf"))
+        pages = len(re.findall(rb"/Type\s*/Page[^s]", prints[0].read_bytes())) if prints else 0
+        check(f"{name}: 2-per-page print file with {2 * ((len(ids) + 1) // 2)} pages",
+              pages == 2 * ((len(ids) + 1) // 2), [p.name for p in prints] + [pages])
     rows = list(csv.DictReader((out / "index.csv").open(encoding="utf-8")))
     check(f"{name}: index.csv zone", all(r["utm_zone"] == zone_label for r in rows))
     check(f"{name}: index.csv epsg", rows and rows[0]["epsg"] == grid_layer.crs().authid())
@@ -245,6 +287,7 @@ def main(selected):
     aoi = grid.ensure_aoi_layer(project, gpkg)
     # Regions run in one session, so every region after the first is a zone switch.
     for name in selected:
+        config.set_setting("two_up", name == "bw")
         try:
             run_region(name, work, project, aoi, gpkg)
         except Exception:
@@ -257,7 +300,10 @@ def main(selected):
 
 if __name__ == "__main__":
     try:
-        code = main(sys.argv[1:] or list(REGIONS))
+        args = sys.argv[1:]
+        offline = "--offline" in args
+        regions = [a for a in args if a != "--offline"]
+        code = main([] if offline else (regions or list(REGIONS)))
     finally:
         app.exitQgis()
     sys.exit(code)

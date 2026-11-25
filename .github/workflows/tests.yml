@@ -1,0 +1,51 @@
+name: tests
+
+# Offline tests run on every push and pull request. The end-to-end export test
+# downloads real map tiles, so it only runs on demand (Actions tab → "Run
+# workflow") to respect the tile servers' fair-use policies.
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      export:
+        description: "Also run the end-to-end export test (downloads map tiles)"
+        type: boolean
+        default: false
+
+jobs:
+  offline:
+    name: Zones, sources, magnetic model
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python dev/test_zones.py
+
+  layout:
+    name: Layout, scale and safe zone (QGIS)
+    runs-on: ubuntu-latest
+    container: qgis/qgis:ltr
+    env:
+      QT_QPA_PLATFORM: offscreen
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 dev/test_core.py --offline
+
+  export:
+    name: End-to-end export (downloads tiles)
+    if: github.event_name == 'workflow_dispatch' && inputs.export
+    runs-on: ubuntu-latest
+    container: qgis/qgis:ltr
+    env:
+      QT_QPA_PLATFORM: offscreen
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 dev/test_core.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: export-pdfs
+          path: dev/out/

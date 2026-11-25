@@ -104,6 +104,12 @@ class SettingsDialog(QDialog):
 
         self.auto_number = QCheckBox("Number sheets automatically on export")
         self.auto_number.setChecked(config.get_bool("auto_number"))
+        self.two_up = QCheckBox()
+        self.two_up.setChecked(config.get_bool("two_up"))
+        self.two_up.setToolTip("Extra PDF for home printers: two sheets stacked on the next larger "
+                               "paper with cut marks. Print it double-sided, 'flip on long edge'.")
+        self.page_combo.currentIndexChanged.connect(self._update_two_up)
+
         self.open_folder = QCheckBox("Open the output folder after export")
         self.open_folder.setChecked(config.get_bool("open_folder"))
 
@@ -131,6 +137,7 @@ class SettingsDialog(QDialog):
         form.addRow("Back attribution", self.back_attribution)
         form.addRow("Resolution (dpi)", self.dpi_spin)
         form.addRow("", self.auto_number)
+        form.addRow("", self.two_up)
         form.addRow("", self.open_folder)
 
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
@@ -143,6 +150,7 @@ class SettingsDialog(QDialog):
 
         self._update_quality_enabled()
         self._update_auto_note()
+        self._update_two_up()
 
     # ------------------------------------------------------------------
     @staticmethod
@@ -229,6 +237,14 @@ class SettingsDialog(QDialog):
         self.back_attribution.setText(fa)
         self._update_quality_enabled()
 
+    def _update_two_up(self, *args):
+        paper = config.TWO_UP_PAPER.get(self.page_combo.currentData())
+        if paper:
+            self.two_up.setText(f"Also create a print file with two sheets per {paper} page")
+        else:
+            self.two_up.setText("Two sheets per page: not available for A2")
+        self.two_up.setEnabled(paper is not None)
+
     def _update_quality_enabled(self):
         jpeg = "JPEG" in (self.front_format.currentData(), self.back_format.currentData())
         self.jpeg_quality.setEnabled(jpeg)
@@ -249,5 +265,6 @@ class SettingsDialog(QDialog):
             "back_attribution": self.back_attribution.text().strip(),
             "dpi": self.dpi_spin.value(),
             "auto_number": self.auto_number.isChecked(),
+            "two_up": self.two_up.isChecked(),
             "open_folder": self.open_folder.isChecked(),
         }

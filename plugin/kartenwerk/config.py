@@ -14,8 +14,9 @@ from qgis.core import QgsApplication, QgsProject, QgsSettings
 # Most printers cannot print the outer ~4–5 mm of the paper. Nothing is placed
 # closer than this to the paper edge.
 SAFE_MM = 5.0
-# White border around the map frame. Left and right must be equal: the back is
-# mirrored about the vertical axis and has to register with the front.
+# White border around the map frame on A5 (larger formats scale the part
+# inside the safe zone, see TEXT_SCALE). Left and right must be equal: the back
+# is mirrored about the vertical axis and has to register with the front.
 MARGIN_SIDE_MM = 12.0  # safe zone + northing km labels / side neighbours
 MARGIN_TOP_MM = 11.0  # safe zone + title row + easting km labels
 MARGIN_BOTTOM_MM = 14.0  # safe zone + km labels + scale bar row + attribution row
@@ -41,6 +42,12 @@ PAGE_FORMATS = {
     "A5": (210.0, 148.0),
 }
 DEFAULT_PAGE_FORMAT = "A5"
+
+# Border text and the border lanes grow with the page so they stay in proportion.
+TEXT_SCALE = {"A5": 1.0, "A4": 1.15, "A3": 1.35, "A2": 1.6}
+
+# "Two sheets per page" print file: each format on the next larger paper (portrait).
+TWO_UP_PAPER = {"A5": "A4", "A4": "A3", "A3": "A2"}
 
 # Overlap between neighbouring sheets (percent of the map frame), so features
 # near a sheet edge also appear on the next sheet.
@@ -68,6 +75,7 @@ class PageGeometry:
     cell_h: float
     pad_w: float  # ground metres shown beyond the cell on the left and on the right
     pad_h: float  # … above and below
+    text_scale: float  # border text/lane size relative to A5
 
     @property
     def map_x(self) -> float:
@@ -91,7 +99,7 @@ class PageGeometry:
     def signature(self) -> str:
         """Identifies everything that changes the layout geometry."""
         return (f"{self.name}|{self.scale}|{self.overlap}|{self.margin_side}|"
-                f"{self.margin_top}|{self.margin_bottom}|{SAFE_MM}")
+                f"{self.margin_top}|{self.margin_bottom}|{SAFE_MM}|{self.text_scale}")
 
 
 def page_format() -> str:
@@ -133,8 +141,12 @@ def page_geometry(name: str | None = None, scale_denom: int | None = None,
     s = scale_denom if scale_denom is not None else scale()
     ov = overlap_percent if overlap_percent is not None else overlap()
     page_w, page_h = PAGE_FORMATS[name]
-    map_w = page_w - 2.0 * MARGIN_SIDE_MM
-    map_h = page_h - MARGIN_TOP_MM - MARGIN_BOTTOM_MM
+    k = TEXT_SCALE[name]
+    side = SAFE_MM + (MARGIN_SIDE_MM - SAFE_MM) * k
+    top = SAFE_MM + (MARGIN_TOP_MM - SAFE_MM) * k
+    bottom = SAFE_MM + (MARGIN_BOTTOM_MM - SAFE_MM) * k
+    map_w = page_w - 2.0 * side
+    map_h = page_h - top - bottom
     frame_w = map_w / 1000.0 * s  # ground metres covered by the map frame
     frame_h = map_h / 1000.0 * s
     cell_w = frame_w * (1.0 - ov / 100.0)
@@ -142,10 +154,11 @@ def page_geometry(name: str | None = None, scale_denom: int | None = None,
     return PageGeometry(
         name=name, scale=s, overlap=ov,
         page_w=page_w, page_h=page_h,
-        margin_side=MARGIN_SIDE_MM, margin_top=MARGIN_TOP_MM, margin_bottom=MARGIN_BOTTOM_MM,
+        margin_side=side, margin_top=top, margin_bottom=bottom,
         map_w=map_w, map_h=map_h,
         cell_w=cell_w, cell_h=cell_h,
         pad_w=(frame_w - cell_w) / 2.0, pad_h=(frame_h - cell_h) / 2.0,
+        text_scale=k,
     )
 
 
@@ -223,6 +236,7 @@ def _defaults() -> dict:
         "page_format": DEFAULT_PAGE_FORMAT,
         "scale": DEFAULT_SCALE,
         "overlap": DEFAULT_OVERLAP,
+        "two_up": False,
         # "auto", a catalog key from sources.py, or "layer:<name>"
         "front_basemap": AUTO,
         "back_basemap": AUTO,
@@ -290,6 +304,7 @@ def export_settings() -> dict:
         "overlap": overlap(),
         "dpi": get_int("dpi"),
         "auto_number": get_bool("auto_number"),
+        "two_up": get_bool("two_up") and page_format() in TWO_UP_PAPER,
         "open_folder": get_bool("open_folder"),
         "front_basemap": str(get_setting("front_basemap") or AUTO),
         "back_basemap": str(get_setting("back_basemap") or AUTO),

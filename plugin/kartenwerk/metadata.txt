@@ -2,15 +2,27 @@
 name=Kartenwerk
 qgisMinimumVersion=3.28
 description=Printable duplex map series anywhere in the world: topographic front, mirrored aerial back, metric UTM grid.
-version=2.0.0
-author=Kartenwerk
+version=2.1.0
+author=Chappie147
+# Required by plugins.qgis.org before uploading (publicly visible):
 email=
-about=Draw a work area, generate a sheet grid in the matching WGS 84 / UTM zone, select the sheets you want and export two-page PDFs (front: topographic map with a 1 km UTM grid; back: aerial imagery mirrored for duplex printing). Page formats A2–A5, scales 1:10 000–1:25 000. Worldwide sources (OpenTopoMap, Esri World Imagery) with automatic national upgrades (e.g. DE, CH, AT, NL, FR, US). Optional: pdfunite or Ghostscript for one merged PDF.
-repository=
-tracker=
-homepage=
+about=Draw a work area, generate a sheet grid in the matching WGS 84 / UTM zone, select the sheets you want and export two-page PDFs: a topographic map with a numbered 1 km UTM grid on the front and aerial imagery mirrored for duplex printing on the back. The border shows a scale bar, grid/true/magnetic north (World Magnetic Model), neighbour sheets and a locator diagram, all inside a printer-safe margin. Page formats A2–A5, scales 1:10 000–1:25 000, optional sheet overlap, and an optional print file with two sheets per page (e.g. A5 on A4) for home printers. Worldwide sources (OpenTopoMap, Esri World Imagery) with automatic national upgrades (DE, CH, AT, NL, FR, US). Optional: pdfunite or Ghostscript for one merged PDF.
+homepage=https://github.com/Andoxtra/QGIS_Kartenwerk
+repository=https://github.com/Andoxtra/QGIS_Kartenwerk
+tracker=https://github.com/Andoxtra/QGIS_Kartenwerk/issues
 category=Plugins
+icon=icon.png
 experimental=False
 deprecated=False
-tags=map,atlas,print,topography,aerial,utm,grid,duplex
-icon=
+hasProcessingProvider=no
+tags=map,atlas,print,topography,aerial,utm,grid,duplex,magnetic declination
+changelog=
+    2.1.0
+    - Print file with two sheets per page on the next larger paper (A5 on A4, A4 on A3, A3 on A2)
+    - Border text and margins scale with the page format
+    - Name sheets ("Name sheet" action); names appear in the title, overview and index
+    - Basemap is added automatically when drawing the first work area
+    2.0.0
+    - Worldwide: WGS 84 / UTM with automatic zone, worldwide and national basemaps
+    - Redesigned border: printer-safe margins, scale bar, numbered km grid, magnetic north, locator
+    - Optional sheet overlap; image encoding on several CPU cores; English user interface

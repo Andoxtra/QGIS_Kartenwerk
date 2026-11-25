@@ -224,7 +224,7 @@ def style_grid(layer: QgsVectorLayer) -> None:
     fmt.setBuffer(buf)
 
     pal = QgsPalLayerSettings()
-    pal.fieldName = 'coalesce("sheet_no", "sheet_id")'
+    pal.fieldName = 'coalesce(to_string("sheet_no"), "sheet_id") || coalesce(\'\\n\' || "sheet_name", \'\')'
     pal.isExpression = True
     pal.placement = QgsPalLayerSettings.Horizontal
     pal.setFormat(fmt)
@@ -438,6 +438,20 @@ def number_selected(grid_layer: QgsVectorLayer) -> int:
     grid_layer.commitChanges()
     grid_layer.triggerRepaint()
     return len(feats)
+
+
+def set_sheet_name(grid_layer: QgsVectorLayer, fid: int, name: str) -> None:
+    """Set (or clear, with an empty name) the display name of one sheet."""
+    name = (name or "").strip()[:80]
+    idx = grid_layer.fields().indexFromName("sheet_name")
+    if grid_layer.isEditable():
+        grid_layer.rollBack()
+    grid_layer.startEditing()
+    grid_layer.changeAttributeValue(fid, idx, name or None)
+    if not grid_layer.commitChanges():
+        raise RuntimeError("The sheet name could not be saved: "
+                           + "; ".join(grid_layer.commitErrors()))
+    grid_layer.triggerRepaint()
 
 
 def neighbour_map(grid_layer: QgsVectorLayer) -> dict:

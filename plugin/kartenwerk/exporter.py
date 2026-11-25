@@ -47,11 +47,28 @@ def _merge_pdfs(files: list[Path], out_path: Path) -> None:
 
 
 class ExportResult(list):
-    """List of written sheet PDFs, plus non-fatal warnings."""
+    """List of written sheet PDFs, plus non-fatal warnings and the optional 2-up print file."""
 
     def __init__(self):
         super().__init__()
         self.warnings: list[str] = []
+        self.print_file: Path | None = None
+
+
+def _export_two_up(project, jobs: list[dict], out_dir: Path, dpi: int, geom) -> Path:
+    """One PDF with two sheets per page on the next larger paper, ready for duplex printing."""
+    paper = config.TWO_UP_PAPER[geom.name]
+    print_layout, slots = layout.two_up_layout(project, len(jobs))
+    temp: list[Path] = []
+    try:
+        for job, (front_slot, back_slot) in zip(jobs, slots):
+            for side, slot in (("front", front_slot), ("back", back_slot)):
+                temp += layout.update_side(print_layout, side, job["sheet"], job["images"][side],
+                                           job["neighbour"], job["text"][side], job["info"], slot)
+        return layout.export_pdf(print_layout, out_dir / f"Print_2-per-page_{paper}.pdf", dpi)
+    finally:
+        for tmp in temp:
+            tmp.unlink(missing_ok=True)
 
 
 def _render_side(project, resolved: sources.Resolved, extent, crs, dpi, width_px, height_px,
@@ -162,6 +179,8 @@ def export_sheets(
     # Unique per export: QGIS caches pictures by file path, so names reused within
     # one session (e.g. re-exporting after changing the basemap) could show stale images.
     run = uuid.uuid4().hex[:8] + "_"
+    two_up = bool(settings.get("two_up")) and geom.name in config.TWO_UP_PAPER
+    two_up_jobs: list[dict] = []
 
     def finish(job: dict) -> None:
         """Wait for a sheet's images, then build its PDF (main thread: layouts are not thread-safe)."""
@@ -169,19 +188,26 @@ def export_sheets(
             for future in job["futures"]:
                 future.result()
             neighbour = grid.neighbour_info(grid_layer, job["sheet"], lookup)
-            info = {**_north_info(job["extent"], utm), "extent": job["extent"],
-                    "sheets": sheets, "date": print_date, "run": run}
+            job["neighbour"] = neighbour
+            job["info"] = {**_north_info(job["extent"], utm), "extent": job["extent"],
+                           "sheets": sheets, "date": print_date, "run": run}
+            job["text"] = {side: settings[f"{side}_attribution"].strip() or job["attribution"][side]
+                           for side in layout.SIDES}
             for side in layout.SIDES:
-                text = settings[f"{side}_attribution"].strip() or job["attribution"][side]
                 job["temp"] += layout.update_side(print_layout, side, job["sheet"],
-                                                  job["images"][side], neighbour, text, info)
+                                                  job["images"][side], neighbour,
+                                                  job["text"][side], job["info"])
             layout.export_pdf(print_layout, job["pdf"], dpi)
             result.append(job["pdf"])
             written_sheets.append((job["sheet"], job["pdf"]))
+            if two_up:
+                job["keep_images"] = True  # needed again for the print file
+                two_up_jobs.append(job)
         except Exception as exc:  # keep going, report at the end
             errors.append(f"{job['stem']}: {exc}")
         finally:
-            for tmp in job["temp"] + ([] if keep_cache else list(job["images"].values())):
+            keep_images = keep_cache or job.get("keep_images", False)
+            for tmp in job["temp"] + ([] if keep_images else list(job["images"].values())):
                 try:
                     tmp.unlink(missing_ok=True)
                 except OSError:
@@ -238,6 +264,17 @@ def export_sheets(
         finally:
             if pending is not None:
                 finish(pending)
+
+    if two_up_jobs:
+        try:
+            result.print_file = _export_two_up(project, two_up_jobs, out_dir, dpi, geom)
+        except Exception as exc:
+            errors.append(f"two sheets per page print file: {exc}")
+        finally:
+            if not keep_cache:
+                for job in two_up_jobs:
+                    for tmp in job["images"].values():
+                        tmp.unlink(missing_ok=True)
 
     if written_sheets:
         _write_index(out_dir, written_sheets, utm.authid())

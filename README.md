@@ -92,6 +92,11 @@ python3 install_plugin.py --zip        # writes kartenwerk.zip
 
 In QGIS: **Plugins → Manage and Install Plugins → Install from ZIP**.
 
+**From the QGIS plugin repository:** not published yet. The plugin folder
+contains everything plugins.qgis.org needs (metadata, icon, LICENSE) except a
+contact email: fill in `email=` in `plugin/kartenwerk/metadata.txt`, build the
+ZIP and upload it there with an OSGeo account.
+
 **Into a profile (for development):** close QGIS, then
 
 ```bash
@@ -111,16 +116,21 @@ the plugin appears under **Plugins → Kartenwerk** and as a toolbar and dock.
    plugin stores its GeoPackage (`kartenwerk.gpkg`) and the default `output/`
    folder next to the project. Without a saved project they go to
    `<QGIS profile>/kartenwerk/`.
-2. **Draw work area** – draw a polygon, finish with right-click, save with
+2. **Draw work area** – in an empty project this first adds OpenTopoMap so
+   you can see where you are; zoom to your area (the search bar at the bottom
+   left finds place names). Draw a polygon, finish with right-click, save with
    `Ctrl+S`.
 3. **Generate grid** – creates sheet cells in the work area's UTM zone,
    buffered by one cell. The project CRS switches to that zone so the grid
-   appears square. The cell size follows the page format and scale (e.g.
-   2.97 × 2.04 km for A5 at 1:15 000).
+   appears square. The cell size follows page format, scale and overlap (e.g.
+   2.65 × 1.75 km for A5 at 1:15 000 with 5 % overlap).
 4. **Select sheets** – click cells; use `Ctrl` / `Shift` for several.
 5. Optional: **Number sheets** – numbers the selected sheets north → south,
-   west → east.
+   west → east. **Name sheet** – gives one selected sheet a name (e.g. a
+   village), shown in the title, the overview and `index.csv`. Names and
+   numbers belong to the grid: regenerating the grid removes them.
 6. **Export selection** – writes the PDFs to the output folder.
+7. Print – see [Printing](#printing).
 
 The dock shows page format, scale and UTM zone, plus the current selection
 count.
@@ -141,6 +151,7 @@ count.
 | Front/Back attribution | automatic | Leave empty to print the source's own attribution. |
 | Resolution (dpi) | `300` | Render and PDF resolution. |
 | Number sheets automatically | on | Numbers unnumbered selected sheets on export. |
+| Two sheets per page | off | Also writes a print file with two sheets stacked on the next larger paper (A5 → A4, A4 → A3, A3 → A2) with cut marks. Not available for A2. |
 | Open output folder | on | Opens the folder after a successful export. |
 
 **Refresh** reloads the layer list; **Swap** swaps front/back basemap, format
@@ -156,6 +167,7 @@ output/
 ├── Sheet_01_32N-R1564C0088.pdf     # 2 pages: front topo, back mirrored imagery
 ├── Sheet_02_32N-R1564C0089.pdf
 ├── all_sheets.pdf                  # overview + all sheets (needs pdfunite or Ghostscript)
+├── Print_2-per-page_A4.pdf         # optional: two sheets per A4 page, for home printers
 └── index.csv                       # comma-separated, UTF-8
 ```
 
@@ -173,10 +185,12 @@ sheet.
 ## Sheet geometry
 
 Nothing is printed closer than 5 mm to the paper edge, the area most printers
-cannot reach. The white border is 12 mm left and right (equal, so the mirrored
-back registers with the front), 11 mm at the top and 14 mm at the bottom. One
-grid cell is the map frame at the chosen scale minus the overlap. Example for
-A5 at 1:15 000 with 5 % overlap:
+cannot reach. On A5 the white border is 12 mm left and right (equal, so the
+mirrored back registers with the front), 11 mm at the top and 14 mm at the
+bottom. On larger pages the border text and the border inside the 5 mm safe
+zone grow with the page (A4 × 1.15, A3 × 1.35, A2 × 1.6), so they stay in
+proportion. One grid cell is the map frame at the chosen scale minus the
+overlap. Example for A5 at 1:15 000 with 5 % overlap:
 
 | Property | Value |
 |---|---|
@@ -186,6 +200,40 @@ A5 at 1:15 000 with 5 % overlap:
 | Grid step (new ground per sheet) | 2 650.5 × 1 752.75 m |
 | Grid | 1 km = 66.7 mm |
 | Render resolution | 300 dpi → 2 197 × 1 453 px map frame |
+
+---
+
+## Printing
+
+1. **Print at actual size.** Choose "Actual size" / 100 % and switch off "Fit
+   to page" or "Shrink oversized pages", otherwise the scale is wrong.
+2. **Check the scale on the first print.** One grid square must measure:
+
+   | Scale | 1 km on paper |
+   |---|---|
+   | 1:10 000 | 100 mm |
+   | 1:12 500 | 80 mm |
+   | 1:15 000 | 66.7 mm |
+   | 1:20 000 | 50 mm |
+   | 1:25 000 | 40 mm |
+
+   If the page was scaled anyway, the scale bar is still correct.
+3. **Duplex setting.** The paper must turn over **like a book page, left to
+   right**, so each back lands behind its front. What the printer calls this
+   depends on the driver:
+   - single sheet PDFs (landscape pages): usually **"flip on short edge"**,
+   - the two-per-page print file (portrait pages): usually **"flip on long
+     edge"**.
+
+   Print one sheet first and hold it against a window: the grid lines on the
+   front and back should coincide. A shift of 1–2 mm is normal for duplex
+   printers; a mirrored or upside-down back means the other flip setting.
+4. **Paper.** A5 sheets need A5 paper in the printer, or switch on **Two
+   sheets per page** and print the `Print_2-per-page_A4.pdf` file on A4, then
+   cut along the cut marks at the middle of the page. For field use, 100–120
+   g/m² paper (or waterproof paper) holds up better than standard 80 g/m².
+5. **Large series.** Print a test sheet before printing everything; most
+   problems (scale, duplex, cut-off text) show on the first page.
 
 ---
 
@@ -230,6 +278,7 @@ QGIS_Kartenwerk/
 │   ├── config.py               # geometry, paths, settings
 │   ├── crs.py                  # UTM zone selection, grid convergence
 │   ├── wmm.py, WMM2025.COF     # World Magnetic Model (magnetic declination)
+│   ├── icon.png, LICENSE       # plugin icon, GPL-2.0-or-later
 │   ├── sources.py              # basemap catalog + automatic selection
 │   ├── services.py             # layer-tree helpers, default basemaps
 │   ├── grid.py                 # work area, grid, numbering, neighbours
@@ -270,6 +319,7 @@ End-to-end export for several regions (needs PyQGIS and internet; writes to
 ```bash
 QT_QPA_PLATFORM=offscreen python3 dev/test_core.py            # bw nl us jp nz fallback lu bz westland
 QT_QPA_PLATFORM=offscreen python3 dev/test_core.py bw nl      # selected regions
+QT_QPA_PLATFORM=offscreen python3 dev/test_core.py --offline  # layout/scale checks only, no downloads
 ```
 
 Without a local QGIS, use the official Docker image:
@@ -278,6 +328,21 @@ Without a local QGIS, use the official Docker image:
 docker run --rm -u $(id -u):$(id -g) -e HOME=/tmp -v "$PWD":/work -w /work \
   qgis/qgis:ltr python3 dev/test_core.py
 ```
+
+**GitHub Actions** (`.github/workflows/tests.yml`) runs `test_zones.py` and
+`test_core.py --offline` on every push and pull request. The end-to-end export
+downloads real map tiles, so it only runs on demand: Actions → tests → Run
+workflow → tick "Also run the end-to-end export test". Its PDFs are attached to
+the run.
+
+---
+
+## Licence
+
+GPL-2.0-or-later, see `LICENSE`. Map data and imagery keep their own licences
+(see [Basemap sources](#basemap-sources)); the attribution printed on each
+sheet must stay there. The World Magnetic Model coefficients (`WMM2025.COF`)
+are public domain (NOAA NCEI / British Geological Survey).
 
 ---
 

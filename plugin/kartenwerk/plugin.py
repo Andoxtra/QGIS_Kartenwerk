@@ -1,7 +1,13 @@
 """QGIS plugin entry point and UI."""
 from __future__ import annotations
 
-from qgis.core import QgsApplication, QgsProject, QgsReferencedRectangle
+from qgis.core import (
+    QgsApplication,
+    QgsCoordinateReferenceSystem,
+    QgsMapLayer,
+    QgsProject,
+    QgsReferencedRectangle,
+)
 from qgis.gui import QgsDockWidget
 from qgis.PyQt.QtCore import Qt, QUrl
 from qgis.PyQt.QtGui import QDesktopServices, QFont
@@ -9,6 +15,7 @@ from qgis.PyQt.QtWidgets import (
     QAction,
     QApplication,
     QDialog,
+    QInputDialog,
     QLabel,
     QMessageBox,
     QProgressDialog,
@@ -17,7 +24,7 @@ from qgis.PyQt.QtWidgets import (
     QWidget,
 )
 
-from . import config, crs as crs_mod, dialog, exporter, grid, layout
+from . import config, crs as crs_mod, dialog, exporter, grid, layout, services
 
 _GRID_NAMES = (config.GRID_LAYER, *config.LEGACY_GRID_LAYERS)
 
@@ -93,6 +100,7 @@ class KartenwerkPlugin:
         make("Generate grid", "mActionAddTable.svg", self.generate_grid)
         make("Select sheets", "mActionSelect.svg", self.select_sheets)
         make("Number sheets", "mActionOrderBy.svg", self.number_sheets)
+        make("Name sheet", "mActionLabeling.svg", self.name_sheet)
         make("Export selection", "mActionSharingExport.svg", self.export_sheets)
         make("Settings", "mActionOptions.svg", self.show_settings)
 
@@ -116,7 +124,7 @@ class KartenwerkPlugin:
             "1. Draw work area\n"
             "2. Generate grid\n"
             "3. Select sheets (click / Ctrl / Shift)\n"
-            "4. Optionally number them\n"
+            "4. Optionally number / name them\n"
             "5. Export selection"
         )
         help_text.setWordWrap(True)
@@ -190,18 +198,30 @@ class KartenwerkPlugin:
     # actions
     # ------------------------------------------------------------------
     def draw_aoi(self):
+        project = QgsProject.instance()
+        added_basemap = False
         try:
-            aoi = grid.ensure_aoi_layer(QgsProject.instance())
+            # A new project shows an empty white canvas: add a basemap so users
+            # can see where to draw.
+            if not any(layer.type() == QgsMapLayer.RasterLayer
+                       for layer in project.mapLayers().values()):
+                services.ensure_basemaps(project)
+                added_basemap = True
+            aoi = grid.ensure_aoi_layer(project)
         except Exception as exc:
             self._error("Work area", str(exc))
             return
+        if added_basemap and project.crs().authid() in ("", "EPSG:4326"):
+            project.setCrs(QgsCoordinateReferenceSystem("EPSG:3857"))  # familiar web-map view
         if not aoi.isEditable():
             aoi.startEditing()
         self.iface.setActiveLayer(aoi)
         self.iface.actionAddFeature().trigger()
-        self.iface.messageBar().pushInfo(
-            "Kartenwerk", "Draw a polygon, finish with right-click, then save (Ctrl+S)."
-        )
+        hint = "Draw a polygon, finish with right-click, then save (Ctrl+S)."
+        if added_basemap:
+            hint = ("OpenTopoMap added. Zoom to your area (the search bar at the bottom left "
+                    "finds place names via its 'Nominatim Geocoder' search), then: " + hint)
+        self.iface.messageBar().pushInfo("Kartenwerk", hint)
 
     def generate_grid(self):
         project = QgsProject.instance()
@@ -254,6 +274,33 @@ class KartenwerkPlugin:
         )
         self.update_count()
 
+    def name_sheet(self):
+        grid_layer = grid.get_grid_layer(QgsProject.instance())
+        if grid_layer is None:
+            self._error("Name sheet", "There is no grid yet.")
+            return
+        features = list(grid_layer.selectedFeatures())
+        if len(features) != 1:
+            self._error("Name sheet", "Select exactly one sheet to name.")
+            return
+        feature = features[0]
+        current = feature["sheet_name"] or ""
+        name, ok = QInputDialog.getText(
+            self.iface.mainWindow(), "Kartenwerk – Name sheet",
+            f"Name for sheet {feature['sheet_id']} (empty removes the name):",
+            text=str(current),
+        )
+        if not ok:
+            return
+        try:
+            grid.set_sheet_name(grid_layer, feature.id(), name)
+        except Exception as exc:
+            self._error("Name sheet", str(exc))
+            return
+        self.iface.messageBar().pushSuccess(
+            "Kartenwerk", f"Sheet {feature['sheet_id']} named '{name.strip()}'." if name.strip()
+            else f"Name of sheet {feature['sheet_id']} removed.")
+
     def export_sheets(self):
         project = QgsProject.instance()
         grid_layer = grid.get_grid_layer(project)
@@ -297,8 +344,9 @@ class KartenwerkPlugin:
 
         out_dir = settings["output_dir"]
         if written:
+            extra = f" Print file: {written.print_file.name}." if written.print_file else ""
             self.iface.messageBar().pushSuccess(
-                "Kartenwerk", f"{len(written)} PDF(s) written to {out_dir}."
+                "Kartenwerk", f"{len(written)} PDF(s) written to {out_dir}.{extra}"
             )
             for warning in written.warnings:
                 self.iface.messageBar().pushWarning("Kartenwerk", warning)
