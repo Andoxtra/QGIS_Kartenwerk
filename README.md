@@ -163,6 +163,12 @@ and attribution. Settings are stored under `kartenwerk/*` in the QGIS settings.
 
 ## Output
 
+**Example:** [`examples/Sheet_05_32N-R3034C0167.pdf`](examples/Sheet_05_32N-R3034C0167.pdf)
+is one exported sheet (Black Forest, A5, 1:15 000, 300 dpi, 5 % overlap): the
+TopPlusOpen topographic map on the front and the DOP20 aerial image, mirrored,
+on the back. Its map content is licensed by BKG and LGL BW, see
+[NOTICE.md](NOTICE.md).
+
 ```
 output/
 ├── Overview.pdf                    # sheet overview (north up) + list of all sheets
@@ -272,6 +278,7 @@ shows only the arrow, since angles measured on a mirrored image are reversed.
 QGIS_Kartenwerk/
 ├── kartenwerk.qgz              # example QGIS project
 ├── kartenwerk.gpkg             # work area (+ generated grid)
+├── examples/                   # an example sheet PDF (map data © BKG / LGL BW)
 ├── setup_project.py            # rebuild the project (keeps work-area polygons)
 ├── install_plugin.py           # install into a QGIS profile / build ZIP
 ├── plugin/kartenwerk/

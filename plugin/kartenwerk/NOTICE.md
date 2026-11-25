@@ -3,7 +3,8 @@
 ## The code: public domain (Unlicense)
 
 All code and files in this repository — the QGIS plugin, scripts, tests,
-documentation and the plugin icon — are released into the public domain under
+documentation and the plugin icon, except the example maps in `examples/`
+(see below) — are released into the public domain under
 the Unlicense (see `LICENSE`). You may use, copy, modify and sell them for any
 purpose without asking and without attribution.
 

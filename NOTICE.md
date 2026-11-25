@@ -3,7 +3,8 @@
 ## The code: public domain (Unlicense)
 
 All code and files in this repository — the QGIS plugin, scripts, tests,
-documentation and the plugin icon — are released into the public domain under
+documentation and the plugin icon, except the example maps in `examples/`
+(see below) — are released into the public domain under
 the [Unlicense](LICENSE). You may use, copy, modify and sell them for any
 purpose without asking and without attribution.
 
@@ -40,6 +41,16 @@ What this means for the maps you make:
 - Commercial use (e.g. selling printed maps) can be restricted by a provider's
   terms, notably Esri's. Check the terms of the sources you use.
 - Private use for yourself is fine with all of the sources above.
+
+## The example maps in `examples/`
+
+`examples/Sheet_05_32N-R3034C0167.pdf` is an export made with this plugin and
+contains third-party map content, so it is **not** public domain:
+
+- front: TopPlusOpen, © BKG (www.bkg.bund.de), CC BY 4.0
+- back: DOP20, © LGL BW (www.lgl-bw.de), dl-de/by-2-0
+
+Both licences allow sharing it with attribution, which is printed on the sheet.
 
 QGIS itself (GPL) is not part of this repository; the plugin only runs inside
 it.
