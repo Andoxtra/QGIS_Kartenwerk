@@ -1,9 +1,7 @@
 """QGIS plugin entry point and UI."""
 from __future__ import annotations
 
-from pathlib import Path
-
-from qgis.core import QgsApplication, QgsProject
+from qgis.core import QgsApplication, QgsProject, QgsReferencedRectangle
 from qgis.gui import QgsDockWidget
 from qgis.PyQt.QtCore import Qt, QUrl
 from qgis.PyQt.QtGui import QDesktopServices, QFont
@@ -19,7 +17,9 @@ from qgis.PyQt.QtWidgets import (
     QWidget,
 )
 
-from . import config, dialog, exporter, grid, layout
+from . import config, crs as crs_mod, dialog, exporter, grid, layout
+
+_GRID_NAMES = (config.GRID_LAYER, *config.LEGACY_GRID_LAYERS)
 
 
 class KartenwerkPlugin:
@@ -28,6 +28,7 @@ class KartenwerkPlugin:
         self.actions: list[QAction] = []
         self.toolbar = None
         self.dock = None
+        self.title_label = None
         self.count_label = None
         self.export_button = None
         self._grid_layer = None
@@ -36,6 +37,7 @@ class KartenwerkPlugin:
     # QGIS plugin lifecycle
     # ------------------------------------------------------------------
     def initGui(self):
+        config.remove_legacy_settings()
         self._create_actions()
 
         self.toolbar = self.iface.addToolBar("Kartenwerk")
@@ -45,20 +47,24 @@ class KartenwerkPlugin:
             self.iface.addPluginToMenu("Kartenwerk", action)
 
         self._create_dock()
-        QgsProject.instance().layerWasAdded.connect(self._on_layer_added)
+        project = QgsProject.instance()
+        project.layerWasAdded.connect(self._on_layer_added)
+        project.layersWillBeRemoved.connect(self._on_layers_removed)
+        project.readProject.connect(self._on_project_read)
         self._connect_grid()
-        self.update_count()
 
     def unload(self):
-        try:
-            QgsProject.instance().layerWasAdded.disconnect(self._on_layer_added)
-        except (TypeError, RuntimeError):
-            pass
-        if self._grid_layer is not None:
+        project = QgsProject.instance()
+        for signal, slot in (
+            (project.layerWasAdded, self._on_layer_added),
+            (project.layersWillBeRemoved, self._on_layers_removed),
+            (project.readProject, self._on_project_read),
+        ):
             try:
-                self._grid_layer.selectionChanged.disconnect(self.update_count)
+                signal.disconnect(slot)
             except (TypeError, RuntimeError):
                 pass
+        self._disconnect_grid()
 
         for action in self.actions:
             self.iface.removePluginMenu("Kartenwerk", action)
@@ -76,22 +82,19 @@ class KartenwerkPlugin:
     # ------------------------------------------------------------------
     # UI construction
     # ------------------------------------------------------------------
-    def _icon(self, name: str):
-        return QgsApplication.getThemeIcon(name)
-
     def _create_actions(self):
         def make(text, icon, slot):
-            action = QAction(self._icon(icon), text, self.iface.mainWindow())
+            action = QAction(QgsApplication.getThemeIcon(icon), text, self.iface.mainWindow())
             action.triggered.connect(slot)
             self.actions.append(action)
             return action
 
-        make("Arbeitsgebiet zeichnen", "mActionAddPolygon.svg", self.draw_aoi)
-        make("Raster erzeugen", "mActionAddTable.svg", self.generate_grid)
-        make("Blätter auswählen", "mActionSelect.svg", self.select_sheets)
-        make("Nummerieren", "mActionOrderBy.svg", self.number_sheets)
-        make("Auswahl exportieren", "mActionSharingExport.svg", self.export_sheets)
-        make("Einstellungen", "mActionOptions.svg", self.show_settings)
+        make("Draw work area", "mActionAddPolygon.svg", self.draw_aoi)
+        make("Generate grid", "mActionAddTable.svg", self.generate_grid)
+        make("Select sheets", "mActionSelect.svg", self.select_sheets)
+        make("Number sheets", "mActionOrderBy.svg", self.number_sheets)
+        make("Export selection", "mActionSharingExport.svg", self.export_sheets)
+        make("Settings", "mActionOptions.svg", self.show_settings)
 
     def _create_dock(self):
         self.dock = QgsDockWidget("Kartenwerk", self.iface.mainWindow())
@@ -99,45 +102,38 @@ class KartenwerkPlugin:
         self.dock.setAllowedAreas(Qt.LeftDockWidgetArea | Qt.RightDockWidgetArea)
 
         widget = QWidget()
-        layout = QVBoxLayout(widget)
-        layout.setSpacing(6)
+        box = QVBoxLayout(widget)
+        box.setSpacing(6)
 
-        title = QLabel("Kartenwerk · A5 · 1:25 000")
-        title_font = QFont()
-        title_font.setBold(True)
-        title.setFont(title_font)
-        layout.addWidget(title)
+        bold = QFont()
+        bold.setBold(True)
+        self.title_label = QLabel()
+        self.title_label.setFont(bold)
+        self.title_label.setWordWrap(True)
+        box.addWidget(self.title_label)
 
         help_text = QLabel(
-            "1. Arbeitsgebiet zeichnen\n"
-            "2. Raster erzeugen\n"
-            "3. Blätter auswählen (Klick / Strg / Shift)\n"
-            "4. Optional nummerieren\n"
-            "5. Auswahl exportieren"
+            "1. Draw work area\n"
+            "2. Generate grid\n"
+            "3. Select sheets (click / Ctrl / Shift)\n"
+            "4. Optionally number them\n"
+            "5. Export selection"
         )
         help_text.setWordWrap(True)
         help_text.setStyleSheet("color: palette(mid);")
-        layout.addWidget(help_text)
+        box.addWidget(help_text)
 
-        buttons = [
-            ("Arbeitsgebiet zeichnen", self.draw_aoi),
-            ("Raster erzeugen", self.generate_grid),
-            ("Blätter auswählen", self.select_sheets),
-            ("Nummerieren", self.number_sheets),
-            ("Auswahl exportieren", self.export_sheets),
-            ("Einstellungen", self.show_settings),
-        ]
-        for text, slot in buttons:
-            button = QPushButton(text)
-            button.clicked.connect(slot)
-            layout.addWidget(button)
-            if text == "Auswahl exportieren":
+        for action in self.actions:
+            button = QPushButton(action.text())
+            button.clicked.connect(action.trigger)
+            box.addWidget(button)
+            if action.text() == "Export selection":
                 self.export_button = button
 
-        self.count_label = QLabel("Ausgewählt: 0 Blätter")
-        self.count_label.setFont(title_font)
-        layout.addWidget(self.count_label)
-        layout.addStretch(1)
+        self.count_label = QLabel()
+        self.count_label.setFont(bold)
+        box.addWidget(self.count_label)
+        box.addStretch(1)
 
         self.dock.setWidget(widget)
         self.iface.addDockWidget(Qt.RightDockWidgetArea, self.dock)
@@ -147,142 +143,132 @@ class KartenwerkPlugin:
     # grid layer / selection tracking
     # ------------------------------------------------------------------
     def _on_layer_added(self, layer):
-        if layer.name() == config.GRID_LAYER:
+        if layer.name() in _GRID_NAMES:
             self._connect_grid()
 
-    def _connect_grid(self):
-        layer = grid.get_layer(QgsProject.instance(), config.GRID_LAYER)
-        if layer is self._grid_layer:
-            return
+    def _on_layers_removed(self, layer_ids):
+        if self._grid_layer is not None and self._grid_layer.id() in layer_ids:
+            self._disconnect_grid()
+            self.update_count()
+
+    def _on_project_read(self, *args):
+        self._disconnect_grid()
+        self._connect_grid()
+
+    def _disconnect_grid(self):
         if self._grid_layer is not None:
             try:
                 self._grid_layer.selectionChanged.disconnect(self.update_count)
             except (TypeError, RuntimeError):
                 pass
-        self._grid_layer = layer
-        if layer is not None:
-            layer.selectionChanged.connect(self.update_count)
+        self._grid_layer = None
+
+    def _connect_grid(self):
+        layer = grid.get_grid_layer(QgsProject.instance())
+        if layer is not self._grid_layer:
+            self._disconnect_grid()
+            self._grid_layer = layer
+            if layer is not None:
+                layer.selectionChanged.connect(self.update_count)
         self.update_count()
 
-    def update_count(self):
-        if self._grid_layer is None:
-            self._grid_layer = grid.get_layer(QgsProject.instance(), config.GRID_LAYER)
-        count = len(self._grid_layer.selectedFeatures()) if self._grid_layer else 0
+    def update_count(self, *args):
+        layer = self._grid_layer
+        count = len(layer.selectedFeatures()) if layer is not None else 0
         if self.count_label is not None:
-            self.count_label.setText(f"Ausgewählt: {count} Blätter")
+            self.count_label.setText(f"Selected: {count} sheet{'s' if count != 1 else ''}")
         if self.export_button is not None:
             self.export_button.setEnabled(count > 0)
+        if self.title_label is not None:
+            parts = ["Kartenwerk", config.page_format(), config.format_scale()]
+            zone = grid.grid_zone(layer)
+            if zone is not None:
+                parts.append(f"UTM {crs_mod.zone_label(*zone)}")
+            self.title_label.setText(" · ".join(parts))
 
     # ------------------------------------------------------------------
     # actions
     # ------------------------------------------------------------------
     def draw_aoi(self):
-        project = QgsProject.instance()
         try:
-            aoi, _ = grid.ensure_layers(project)
+            aoi = grid.ensure_aoi_layer(QgsProject.instance())
         except Exception as exc:
-            self._error("Arbeitsgebiet", str(exc))
+            self._error("Work area", str(exc))
             return
         if not aoi.isEditable():
             aoi.startEditing()
         self.iface.setActiveLayer(aoi)
         self.iface.actionAddFeature().trigger()
         self.iface.messageBar().pushInfo(
-            "Kartenwerk",
-            "Polygon zeichnen, mit Rechtsklick abschließen, dann Speichern (Strg+S).",
+            "Kartenwerk", "Draw a polygon, finish with right-click, then save (Ctrl+S)."
         )
 
     def generate_grid(self):
         project = QgsProject.instance()
         try:
-            aoi, grid_layer = grid.ensure_layers(project)
+            aoi = grid.ensure_aoi_layer(project)
             if aoi.isEditable():
                 aoi.commitChanges()
             if aoi.featureCount() == 0:
-                self._error("Raster erzeugen", "Bitte zuerst ein Arbeitsgebiet zeichnen.")
+                self._error("Generate grid", "Please draw a work area first.")
                 return
-            count = grid.generate_grid(project, aoi, grid_layer)
+            grid_layer, count, warning = grid.generate_grid(project, aoi)
         except Exception as exc:
-            self._error("Raster erzeugen", str(exc))
-            return
-
-        if count == 0:
-            self._error(
-                "Raster erzeugen",
-                "Keine Rasterzellen erzeugt. Bitte das Arbeitsgebiet prüfen.",
-            )
+            self._error("Generate grid", str(exc))
             return
 
         grid_layer.removeSelection()
-        self._grid_layer = grid_layer
         self._connect_grid()
         canvas = self.iface.mapCanvas()
-        canvas.setExtent(grid_layer.extent())
+        canvas.setReferencedExtent(QgsReferencedRectangle(grid_layer.extent(), grid_layer.crs()))
         canvas.refresh()
+        zone = crs_mod.zone_label(*grid.grid_zone(grid_layer))
         self.iface.messageBar().pushSuccess(
-            "Kartenwerk",
-            f"{count} Rasterzellen erzeugt. Jetzt die gewünschten Blätter auswählen.",
+            "Kartenwerk", f"{count} grid cells created in UTM zone {zone}. Now select the sheets you want."
         )
-        self.update_count()
+        if warning:
+            self.iface.messageBar().pushWarning("Kartenwerk", warning)
 
     def select_sheets(self):
-        project = QgsProject.instance()
-        grid_layer = grid.get_layer(project, config.GRID_LAYER)
+        grid_layer = grid.get_grid_layer(QgsProject.instance())
         if grid_layer is None:
-            self._error("Blätter auswählen", "Bitte zuerst ein Raster erzeugen.")
+            self._error("Select sheets", "Please generate a grid first.")
             return
         self.iface.setActiveLayer(grid_layer)
         self.iface.actionSelect().trigger()
         self.iface.messageBar().pushInfo(
-            "Kartenwerk",
-            "Blätter anklicken; mit Strg/Shift mehrere auswählen.",
+            "Kartenwerk", "Click sheets; hold Ctrl/Shift to select several."
         )
 
     def number_sheets(self):
-        grid_layer = grid.get_layer(QgsProject.instance(), config.GRID_LAYER)
+        grid_layer = grid.get_grid_layer(QgsProject.instance())
         if grid_layer is None:
-            self._error("Nummerieren", "Kein Raster vorhanden.")
+            self._error("Number sheets", "There is no grid yet.")
             return
         count = grid.number_selected(grid_layer)
         if count == 0:
-            self._error("Nummerieren", "Keine Blätter ausgewählt.")
+            self._error("Number sheets", "No sheets selected.")
             return
         self.iface.messageBar().pushSuccess(
-            "Kartenwerk", f"{count} Blätter nummeriert (Norden → Süden, Westen → Osten)."
+            "Kartenwerk", f"{count} sheets numbered (north → south, west → east)."
         )
         self.update_count()
 
     def export_sheets(self):
         project = QgsProject.instance()
-        grid_layer = grid.get_layer(project, config.GRID_LAYER)
+        grid_layer = grid.get_grid_layer(project)
         if grid_layer is None:
-            self._error("Export", "Kein Raster vorhanden.")
+            self._error("Export", "There is no grid yet.")
             return
         selected = grid.selected_sheets(grid_layer)
         if not selected:
-            self._error("Export", "Keine Blätter ausgewählt.")
+            self._error("Export", "No sheets selected (or the grid is from an older version: "
+                                  "please generate it again).")
             return
 
-        settings = {
-            "output_dir": str(config.get_setting("output_dir")),
-            "topo_style": str(config.get_setting("topo_style")),
-            "imagery": str(config.get_setting("imagery")),
-            "front_layer": str(config.get_setting("front_layer") or ""),
-            "back_layer": str(config.get_setting("back_layer") or ""),
-            "front_format": str(config.get_setting("front_format")),
-            "back_format": str(config.get_setting("back_format")),
-            "jpeg_quality": int(config.get_setting("jpeg_quality")),
-            "front_source": str(config.get_setting("front_source")),
-            "back_source": str(config.get_setting("back_source")),
-            "page_format": str(config.get_setting("page_format")),
-            "dpi": int(config.get_setting("dpi")),
-            "auto_number": bool(config.get_setting("auto_number")),
-            "open_folder": bool(config.get_setting("open_folder")),
-        }
-
+        settings = config.export_settings()
         progress = QProgressDialog(
-            "Blätter werden erzeugt …", "Abbrechen", 0, len(selected),
-            self.iface.mainWindow(),
+            "Creating sheets …", "Cancel", 0, len(selected), self.iface.mainWindow()
         )
         progress.setWindowTitle("Kartenwerk – Export")
         progress.setWindowModality(Qt.WindowModal)
@@ -291,37 +277,35 @@ class KartenwerkPlugin:
 
         def report(index, total, name):
             progress.setValue(index - 1)
-            progress.setLabelText(f"Blatt {index}/{total}: {name}")
+            progress.setLabelText(f"Sheet {index}/{total}: {name}")
             QApplication.processEvents()
             return not progress.wasCanceled()
 
         QApplication.setOverrideCursor(Qt.WaitCursor)
         try:
-            written = exporter.export_sheets(
-                project, grid_layer, settings, progress=report
-            )
+            written = exporter.export_sheets(project, grid_layer, settings, progress=report)
         except Exception as exc:
             progress.close()
-            QMessageBox.warning(
-                self.iface.mainWindow(), "Kartenwerk – Export", str(exc)
-            )
+            QMessageBox.warning(self.iface.mainWindow(), "Kartenwerk – Export", str(exc))
             return
         finally:
             QApplication.restoreOverrideCursor()
 
         progress.setValue(len(selected))
         progress.close()
+        self.update_count()
 
-        out_dir = config.output_dir()
+        out_dir = settings["output_dir"]
         if written:
             self.iface.messageBar().pushSuccess(
-                "Kartenwerk",
-                f"{len(written)} PDF(s) in {out_dir} erzeugt.",
+                "Kartenwerk", f"{len(written)} PDF(s) written to {out_dir}."
             )
-            if settings.get("open_folder"):
+            for warning in written.warnings:
+                self.iface.messageBar().pushWarning("Kartenwerk", warning)
+            if settings["open_folder"]:
                 QDesktopServices.openUrl(QUrl.fromLocalFile(str(out_dir)))
         else:
-            self._error("Export", "Es wurden keine PDFs erzeugt.")
+            self._error("Export", "No PDFs were created.")
 
     def show_settings(self):
         dlg = dialog.SettingsDialog(self.iface.mainWindow())
@@ -329,20 +313,20 @@ class KartenwerkPlugin:
             return
         old_format = config.page_format()
         old_scale = config.scale()
+        old_overlap = config.overlap()
         values = dlg.values()
         for key, value in values.items():
             config.set_setting(key, value)
-        if values.get("page_format") != old_format or int(values.get("scale")) != old_scale:
-            layout.ensure_layouts(QgsProject.instance())
+        if (values["page_format"], int(values["scale"]), int(values["overlap"])) != \
+                (old_format, old_scale, old_overlap):
+            layout.ensure_layout(QgsProject.instance())
             self.iface.messageBar().pushWarning(
-                "Kartenwerk",
-                "Seitenformat oder Maßstab geändert. Bitte 'Raster erzeugen' erneut ausführen.",
+                "Kartenwerk", "Page format, scale or overlap changed. Please run 'Generate grid' again."
             )
         else:
-            self.iface.messageBar().pushSuccess("Kartenwerk", "Einstellungen gespeichert.")
+            self.iface.messageBar().pushSuccess("Kartenwerk", "Settings saved.")
+        self.update_count()
 
     # ------------------------------------------------------------------
     def _error(self, title: str, message: str):
-        QMessageBox.warning(
-            self.iface.mainWindow(), f"Kartenwerk – {title}", message
-        )
+        QMessageBox.warning(self.iface.mainWindow(), f"Kartenwerk – {title}", message)

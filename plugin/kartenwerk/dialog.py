@@ -4,6 +4,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from qgis.core import QgsMapLayer, QgsProject
+from qgis.PyQt.QtCore import Qt
 from qgis.PyQt.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -20,23 +21,20 @@ from qgis.PyQt.QtWidgets import (
     QWidget,
 )
 
-from . import config
+from . import config, crs as crs_mod, grid, sources
 
 
 class SettingsDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Kartenwerk – Einstellungen")
-        self.setMinimumWidth(520)
+        self.setWindowTitle("Kartenwerk – Settings")
+        self.setMinimumWidth(560)
 
-        self.output_edit = QLineEdit(str(config.get_setting("output_dir")))
+        self.output_edit = QLineEdit(str(config.get_setting("output_dir") or ""))
+        self.output_edit.setPlaceholderText(str(config.default_output_dir()))
         browse = QPushButton("…")
         browse.clicked.connect(self._browse)
-        output_row = QWidget()
-        output_layout = QHBoxLayout(output_row)
-        output_layout.setContentsMargins(0, 0, 0, 0)
-        output_layout.addWidget(self.output_edit, 1)
-        output_layout.addWidget(browse)
+        output_row = self._row(self.output_edit, browse)
 
         self.page_combo = QComboBox()
         for name in ("A2", "A3", "A4", "A5"):
@@ -49,78 +47,89 @@ class SettingsDialog(QDialog):
             self.scale_combo.addItem(config.SCALES[denom], denom)
         self._select_data(self.scale_combo, config.scale())
 
+        self.overlap_combo = QComboBox()
+        for percent, text in config.OVERLAPS.items():
+            self.overlap_combo.addItem(text, percent)
+        self.overlap_combo.setToolTip("Neighbouring sheets share this strip, so paths near an edge "
+                                      "also appear on the next sheet. A dashed line marks where "
+                                      "the next sheet begins.")
+        self._select_data(self.overlap_combo, config.overlap())
+
         self.front_combo = QComboBox()
         self.back_combo = QComboBox()
-        self._populate_layers(
-            config.get_setting("front_layer") or "",
-            config.get_setting("back_layer") or "",
+        self._populate_basemaps(
+            str(config.get_setting("front_basemap") or config.AUTO),
+            str(config.get_setting("back_basemap") or config.AUTO),
         )
+        self.front_combo.currentIndexChanged.connect(self._update_auto_note)
+        self.back_combo.currentIndexChanged.connect(self._update_auto_note)
 
-        refresh_button = QPushButton("Aktualisieren")
-        refresh_button.clicked.connect(self._refresh_layers)
-        front_row = QWidget()
-        front_layout = QHBoxLayout(front_row)
-        front_layout.setContentsMargins(0, 0, 0, 0)
-        front_layout.addWidget(self.front_combo, 1)
-        front_layout.addWidget(refresh_button)
-
-        swap_button = QPushButton("Tauschen")
+        refresh_button = QPushButton("Refresh")
+        refresh_button.setToolTip("Reload the list after adding a layer to the project")
+        refresh_button.clicked.connect(lambda: self._populate_basemaps())
+        swap_button = QPushButton("Swap")
+        swap_button.setToolTip("Swap front and back basemap, format and attribution")
         swap_button.clicked.connect(self._swap)
-        back_row = QWidget()
-        back_layout = QHBoxLayout(back_row)
-        back_layout.setContentsMargins(0, 0, 0, 0)
-        back_layout.addWidget(self.back_combo, 1)
-        back_layout.addWidget(swap_button)
+        front_row = self._row(self.front_combo, refresh_button)
+        back_row = self._row(self.back_combo, swap_button)
+
+        self.auto_note = QLabel()
+        self.auto_note.setWordWrap(True)
+        self.auto_note.setStyleSheet("color: palette(mid);")
 
         self.front_format = QComboBox()
         self.back_format = QComboBox()
         for combo in (self.front_format, self.back_format):
-            combo.addItem("PNG (verlustfrei)", "PNG")
-            combo.addItem("JPEG (schneller, kleiner)", "JPEG")
-        self._select_data(self.front_format, config.get_setting("front_format"))
-        self._select_data(self.back_format, config.get_setting("back_format"))
+            combo.addItem("PNG (lossless)", "PNG")
+            combo.addItem("JPEG (faster, smaller)", "JPEG")
+        self._select_data(self.front_format, str(config.get_setting("front_format")).upper())
+        self._select_data(self.back_format, str(config.get_setting("back_format")).upper())
         self.front_format.currentIndexChanged.connect(self._update_quality_enabled)
         self.back_format.currentIndexChanged.connect(self._update_quality_enabled)
 
         self.jpeg_quality = QSpinBox()
         self.jpeg_quality.setRange(50, 100)
         self.jpeg_quality.setSuffix(" %")
-        self.jpeg_quality.setValue(int(config.get_setting("jpeg_quality")))
+        self.jpeg_quality.setValue(config.get_int("jpeg_quality"))
 
-        self.front_source = QLineEdit(str(config.get_setting("front_source")))
-        self.back_source = QLineEdit(str(config.get_setting("back_source")))
+        self.front_attribution = QLineEdit(str(config.get_setting("front_attribution") or ""))
+        self.back_attribution = QLineEdit(str(config.get_setting("back_attribution") or ""))
+        for edit in (self.front_attribution, self.back_attribution):
+            edit.setPlaceholderText("Automatic (from the basemap)")
 
         self.dpi_spin = QSpinBox()
         self.dpi_spin.setRange(150, 600)
         self.dpi_spin.setSingleStep(50)
-        self.dpi_spin.setValue(int(config.get_setting("dpi")))
+        self.dpi_spin.setValue(config.get_int("dpi"))
 
-        self.auto_number = QCheckBox("Blätter beim Export automatisch nummerieren")
-        self.auto_number.setChecked(bool(config.get_setting("auto_number")))
-
-        self.open_folder = QCheckBox("Ausgabeordner nach dem Export öffnen")
-        self.open_folder.setChecked(bool(config.get_setting("open_folder")))
+        self.auto_number = QCheckBox("Number sheets automatically on export")
+        self.auto_number.setChecked(config.get_bool("auto_number"))
+        self.open_folder = QCheckBox("Open the output folder after export")
+        self.open_folder.setChecked(config.get_bool("open_folder"))
 
         note = QLabel(
-            "Seitenformat und Maßstab bestimmen die Rasterzellengröße. "
-            "Nach einer Änderung bitte das Raster neu erzeugen."
+            "Page format, scale and overlap set the grid cell size. Regenerate the grid after "
+            "changing them. "
+            "Coordinates are WGS 84 / UTM; the zone is chosen from the work area."
         )
         note.setWordWrap(True)
         note.setStyleSheet("color: palette(mid);")
 
         form = QFormLayout()
-        form.addRow("Ausgabeordner", output_row)
-        form.addRow("Seitenformat", self.page_combo)
-        form.addRow("Maßstab", self.scale_combo)
+        form.addRow("Output folder", output_row)
+        form.addRow("Page format", self.page_combo)
+        form.addRow("Scale", self.scale_combo)
+        form.addRow("Sheet overlap", self.overlap_combo)
         form.addRow("", note)
-        form.addRow("Vorderseite (Karte)", front_row)
-        form.addRow("Rückseite (Karte)", back_row)
-        form.addRow("Vorderseite Format", self.front_format)
-        form.addRow("Rückseite Format", self.back_format)
-        form.addRow("JPEG-Qualität", self.jpeg_quality)
-        form.addRow("Quellenangabe Vorderseite", self.front_source)
-        form.addRow("Quellenangabe Rückseite", self.back_source)
-        form.addRow("Auflösung (dpi)", self.dpi_spin)
+        form.addRow("Front (map)", front_row)
+        form.addRow("Back (imagery)", back_row)
+        form.addRow("", self.auto_note)
+        form.addRow("Front format", self.front_format)
+        form.addRow("Back format", self.back_format)
+        form.addRow("JPEG quality", self.jpeg_quality)
+        form.addRow("Front attribution", self.front_attribution)
+        form.addRow("Back attribution", self.back_attribution)
+        form.addRow("Resolution (dpi)", self.dpi_spin)
         form.addRow("", self.auto_number)
         form.addRow("", self.open_folder)
 
@@ -128,17 +137,26 @@ class SettingsDialog(QDialog):
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
 
-        layout = QVBoxLayout(self)
-        layout.addLayout(form)
-        layout.addWidget(buttons)
+        box = QVBoxLayout(self)
+        box.addLayout(form)
+        box.addWidget(buttons)
 
         self._update_quality_enabled()
+        self._update_auto_note()
 
     # ------------------------------------------------------------------
+    @staticmethod
+    def _row(main: QWidget, button: QPushButton) -> QWidget:
+        row = QWidget()
+        layout = QHBoxLayout(row)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(main, 1)
+        layout.addWidget(button)
+        return row
+
     def _browse(self):
-        folder = QFileDialog.getExistingDirectory(
-            self, "Ausgabeordner wählen", self.output_edit.text()
-        )
+        start = self.output_edit.text() or self.output_edit.placeholderText()
+        folder = QFileDialog.getExistingDirectory(self, "Choose output folder", start)
         if folder:
             self.output_edit.setText(folder)
 
@@ -148,66 +166,87 @@ class SettingsDialog(QDialog):
         if index >= 0:
             combo.setCurrentIndex(index)
 
-    def _populate_layers(self, front_value=None, back_value=None):
+    def _populate_basemaps(self, front_value=None, back_value=None):
         front_value = self.front_combo.currentData() if front_value is None else front_value
         back_value = self.back_combo.currentData() if back_value is None else back_value
 
-        layers = [
-            layer for layer in QgsProject.instance().mapLayers().values()
-            if layer.type() == QgsMapLayer.RasterLayer
-        ]
-        layers.sort(key=lambda layer: layer.name().lower())
+        project_layers = sorted(
+            (
+                layer for layer in QgsProject.instance().mapLayers().values()
+                if layer.type() == QgsMapLayer.RasterLayer
+                and not layer.customProperty("kartenwerk_source")
+            ),
+            key=lambda layer: layer.name().lower(),
+        )
 
-        for combo in (self.front_combo, self.back_combo):
+        for combo, first_role in ((self.front_combo, sources.TOPO),
+                                  (self.back_combo, sources.IMAGERY)):
+            combo.blockSignals(True)
             combo.clear()
-            combo.addItem("— Standard (automatisch) —", "")
-
-        for layer in layers:
-            self.front_combo.addItem(layer.name(), layer.name())
-            self.back_combo.addItem(layer.name(), layer.name())
+            combo.addItem("Automatic (best for the work area)", config.AUTO)
+            other = sources.IMAGERY if first_role == sources.TOPO else sources.TOPO
+            for role in (first_role, other):
+                combo.insertSeparator(combo.count())
+                for source in sources.for_role(role):
+                    combo.addItem(source.name, source.key)
+                    combo.setItemData(combo.count() - 1, source.note or source.attribution,
+                                      Qt.ToolTipRole)
+            if project_layers:
+                combo.insertSeparator(combo.count())
+                for layer in project_layers:
+                    combo.addItem(f"Project layer: {layer.name()}", f"layer:{layer.name()}")
+            combo.blockSignals(False)
 
         self._select_data(self.front_combo, front_value)
         self._select_data(self.back_combo, back_value)
+        self._update_auto_note()
 
-    def _refresh_layers(self):
-        self._populate_layers()
+    def _update_auto_note(self, *args):
+        if not hasattr(self, "auto_note"):
+            return
+        try:
+            bbox = crs_mod.layer_lonlat_bbox(grid.get_aoi_layer(QgsProject.instance()))
+        except Exception:
+            bbox = None
+        if bbox is None:
+            self.auto_note.setText(
+                "Automatic uses national services where available, otherwise "
+                f"{sources.world_default(sources.TOPO).name} / "
+                f"{sources.world_default(sources.IMAGERY).name}."
+            )
+            return
+        front = sources.best_source(sources.TOPO, bbox).name
+        back = sources.best_source(sources.IMAGERY, bbox).name
+        self.auto_note.setText(f"Automatic for the current work area: front = {front}, back = {back}.")
 
     def _swap(self):
-        fi = self.front_combo.currentIndex()
-        bi = self.back_combo.currentIndex()
-        self.front_combo.setCurrentIndex(bi)
-        self.back_combo.setCurrentIndex(fi)
-
-        ff = self.front_format.currentIndex()
-        bf = self.back_format.currentIndex()
-        self.front_format.setCurrentIndex(bf)
-        self.back_format.setCurrentIndex(ff)
-
-        fs = self.front_source.text()
-        bs = self.back_source.text()
-        self.front_source.setText(bs)
-        self.back_source.setText(fs)
+        for a, b in ((self.front_combo, self.back_combo), (self.front_format, self.back_format)):
+            ia, ib = a.currentData(), b.currentData()
+            self._select_data(a, ib)
+            self._select_data(b, ia)
+        fa, ba = self.front_attribution.text(), self.back_attribution.text()
+        self.front_attribution.setText(ba)
+        self.back_attribution.setText(fa)
         self._update_quality_enabled()
 
     def _update_quality_enabled(self):
-        jpeg = (
-            self.front_format.currentData() == "JPEG"
-            or self.back_format.currentData() == "JPEG"
-        )
+        jpeg = "JPEG" in (self.front_format.currentData(), self.back_format.currentData())
         self.jpeg_quality.setEnabled(jpeg)
 
     def values(self) -> dict:
+        output = self.output_edit.text().strip()
         return {
-            "output_dir": str(Path(self.output_edit.text()).expanduser()),
+            "output_dir": str(Path(output).expanduser()) if output else "",
             "page_format": self.page_combo.currentData(),
             "scale": int(self.scale_combo.currentData()),
-            "front_layer": self.front_combo.currentData() or "",
-            "back_layer": self.back_combo.currentData() or "",
+            "overlap": int(self.overlap_combo.currentData()),
+            "front_basemap": self.front_combo.currentData() or config.AUTO,
+            "back_basemap": self.back_combo.currentData() or config.AUTO,
             "front_format": self.front_format.currentData(),
             "back_format": self.back_format.currentData(),
             "jpeg_quality": self.jpeg_quality.value(),
-            "front_source": self.front_source.text(),
-            "back_source": self.back_source.text(),
+            "front_attribution": self.front_attribution.text().strip(),
+            "back_attribution": self.back_attribution.text().strip(),
             "dpi": self.dpi_spin.value(),
             "auto_number": self.auto_number.isChecked(),
             "open_folder": self.open_folder.isChecked(),

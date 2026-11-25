@@ -1,2 +1,11 @@
 /.venv
 /.idea
+__pycache__/
+*.pyc
+/cache/
+/output/
+/ausgabe/
+/dev/out/
+/dev/cache/
+/dev/test_data*.gpkg
+*.zip

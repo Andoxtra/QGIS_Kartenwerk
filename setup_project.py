@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Create the Kartenwerk QGIS project, GeoPackage, themes and layouts."""
+"""Create the Kartenwerk QGIS project (next to this script) with basemaps, themes and layout.
+
+Existing work-area polygons in kartenwerk.gpkg are kept (and migrated from the
+version-1 'arbeitsgebiet' table if needed).
+"""
 from __future__ import annotations
 
 import os
@@ -11,7 +15,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT / "plugin"))
 
-from qgis.core import (
+from qgis.core import (  # noqa: E402
     QgsApplication,
     QgsCoordinateReferenceSystem,
     QgsProject,
@@ -22,48 +26,40 @@ from qgis.core import (
 app = QgsApplication([], False)
 app.initQgis()
 
-from kartenwerk import config, grid, layout, services
+from kartenwerk import config, grid, layout, services  # noqa: E402
+
+PROJECT_PATH = ROOT / "kartenwerk.qgz"
 
 
 def main() -> int:
-    config.PROJECT_DIR.mkdir(parents=True, exist_ok=True)
-    config.CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    config.DEFAULT_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-
     project = QgsProject.instance()
     project.clear()
-    project.setCrs(QgsCoordinateReferenceSystem(config.PROJECT_CRS))
-    project.setTitle("Kartenwerk – A5 1:25 000")
+    project.setFileName(str(PROJECT_PATH))  # data_dir() follows the project folder
+    project.setCrs(QgsCoordinateReferenceSystem("EPSG:3857"))
+    project.setTitle("Kartenwerk")
     project.viewSettings().setDefaultViewExtent(
         QgsReferencedRectangle(
-            QgsRectangle(380000, 5180000, 620000, 5520000),
-            QgsCoordinateReferenceSystem(config.PROJECT_CRS),
+            QgsRectangle(-180, -60, 180, 75), QgsCoordinateReferenceSystem("EPSG:4326")
         )
     )
 
-    print("Lade Basiskarten …")
+    print("Adding basemaps …")
     basemaps = services.ensure_basemaps(project)
     print("  ", ", ".join(f"{role}: {layer.name()}" for role, layer in basemaps.items()))
 
-    print("Erzeuge Arbeitsgebiet/Raster …")
-    aoi, grid_layer = grid.ensure_layers(project, config.GPKG_PATH)
-    print("  ", aoi.name(), grid_layer.name())
+    print("Adding work area …")
+    aoi = grid.ensure_aoi_layer(project)
+    print(f"   {aoi.name()} ({aoi.featureCount()} polygons)")
 
-    print("Erzeuge Kartenansichten …")
     services.ensure_map_themes(project, basemaps)
+    print("Creating layout …")
+    print("  ", layout.ensure_layout(project, force=True).name())
 
-    print("Erzeuge Layouts …")
-    front, back = layout.ensure_layouts(project, force=True)
-    print("  ", front.name(), back.name())
-
-    ok = project.write(str(config.PROJECT_PATH))
-    if not ok:
-        print("FEHLER: Projekt konnte nicht gespeichert werden.")
+    if not project.write(str(PROJECT_PATH)):
+        print("ERROR: project could not be saved.")
         return 1
-
-    print(f"Projekt gespeichert: {config.PROJECT_PATH}")
-    print(f"GeoPackage:          {config.GPKG_PATH}")
-    print(f"Ausgabeordner:       {config.DEFAULT_OUTPUT_DIR}")
+    print(f"Project saved: {PROJECT_PATH}")
+    print(f"GeoPackage:    {config.gpkg_path()}")
     return 0
 
 

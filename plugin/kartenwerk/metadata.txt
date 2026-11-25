@@ -1,16 +1,16 @@
 [general]
 name=Kartenwerk
 qgisMinimumVersion=3.28
-description=A5 1:25.000 map series: topographic front, mirrored aerial back, interactive sheet selection.
-version=1.0.0
+description=Printable duplex map series anywhere in the world: topographic front, mirrored aerial back, metric UTM grid.
+version=2.0.0
 author=Kartenwerk
 email=
-about=Creates A5 landscape 1:25.000 map sheets from TopPlusOpen and LGL-BW DOP20. Draw a working area, generate a 4.85 x 3.30 km grid, select the sheets you want, and export two-page PDFs (front topo / mirrored aerial back) with UTM grid, coordinates and neighbour indicators.
+about=Draw a work area, generate a sheet grid in the matching WGS 84 / UTM zone, select the sheets you want and export two-page PDFs (front: topographic map with a 1 km UTM grid; back: aerial imagery mirrored for duplex printing). Page formats A2–A5, scales 1:10 000–1:25 000. Worldwide sources (OpenTopoMap, Esri World Imagery) with automatic national upgrades (e.g. DE, CH, AT, NL, FR, US). Optional: pdfunite or Ghostscript for one merged PDF.
 repository=
 tracker=
 homepage=
 category=Plugins
 experimental=False
 deprecated=False
-tags=map,atlas,print,topography,aerial,utm
+tags=map,atlas,print,topography,aerial,utm,grid,duplex
 icon=

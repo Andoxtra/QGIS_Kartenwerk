@@ -2,16 +2,25 @@
 from __future__ import annotations
 
 import os
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
-from qgis.core import QgsSettings
+from qgis.core import QgsApplication, QgsProject, QgsSettings
 
 # ---------------------------------------------------------------------------
 # Page / scale geometry (all layout units are millimetres)
 # ---------------------------------------------------------------------------
-MARGIN_MM = 6.0
+# Most printers cannot print the outer ~4–5 mm of the paper. Nothing is placed
+# closer than this to the paper edge.
+SAFE_MM = 5.0
+# White border around the map frame. Left and right must be equal: the back is
+# mirrored about the vertical axis and has to register with the front.
+MARGIN_SIDE_MM = 12.0  # safe zone + northing km labels / side neighbours
+MARGIN_TOP_MM = 11.0  # safe zone + title row + easting km labels
+MARGIN_BOTTOM_MM = 14.0  # safe zone + km labels + scale bar row + attribution row
 DPI = 300
+GRID_SPACING_M = 1000.0
 
 # Available map scales (denominators). A smaller denominator zooms in further,
 # making text larger and more readable on paper at the cost of less area/sheet.
@@ -33,7 +42,12 @@ PAGE_FORMATS = {
 }
 DEFAULT_PAGE_FORMAT = "A5"
 
-# Fixed grid origin in EPSG:25832 so sheet ids stay stable between runs.
+# Overlap between neighbouring sheets (percent of the map frame), so features
+# near a sheet edge also appear on the next sheet.
+OVERLAPS = {0: "None", 5: "5 %", 10: "10 %"}
+DEFAULT_OVERLAP = 5
+
+# Fixed grid origin (E 0 / N 0 of the UTM zone) so sheet ids stay stable.
 GRID_ORIGIN_E = 0.0
 GRID_ORIGIN_N = 0.0
 
@@ -41,23 +55,43 @@ GRID_ORIGIN_N = 0.0
 @dataclass(frozen=True)
 class PageGeometry:
     name: str
+    scale: int
+    overlap: int  # percent
     page_w: float
     page_h: float
-    margin: float
-    map_x: float
-    map_y: float
+    margin_side: float
+    margin_top: float
+    margin_bottom: float
     map_w: float
     map_h: float
-    cell_w: float
+    cell_w: float  # ground metres per grid cell (sheet step)
     cell_h: float
+    pad_w: float  # ground metres shown beyond the cell on the left and on the right
+    pad_h: float  # … above and below
+
+    @property
+    def map_x(self) -> float:
+        return self.margin_side
+
+    @property
+    def map_y(self) -> float:
+        return self.margin_top
 
     @property
     def right(self) -> float:
-        return self.page_w - self.margin
+        return self.page_w - self.margin_side
 
     @property
     def bottom(self) -> float:
-        return self.page_h - self.margin
+        return self.page_h - self.margin_bottom
+
+    def mm_per_m(self) -> float:
+        return 1000.0 / self.scale
+
+    def signature(self) -> str:
+        """Identifies everything that changes the layout geometry."""
+        return (f"{self.name}|{self.scale}|{self.overlap}|{self.margin_side}|"
+                f"{self.margin_top}|{self.margin_bottom}|{SAFE_MM}")
 
 
 def page_format() -> str:
@@ -68,8 +102,20 @@ def page_format() -> str:
 
 def scale() -> int:
     """Return the configured map scale denominator (validated)."""
-    value = int(get_setting("scale") or DEFAULT_SCALE)
+    try:
+        value = int(get_setting("scale") or DEFAULT_SCALE)
+    except (TypeError, ValueError):
+        value = DEFAULT_SCALE
     return value if value in SCALES else DEFAULT_SCALE
+
+
+def overlap() -> int:
+    """Return the configured sheet overlap in percent (validated)."""
+    try:
+        value = int(get_setting("overlap"))
+    except (TypeError, ValueError):
+        value = DEFAULT_OVERLAP
+    return value if value in OVERLAPS else DEFAULT_OVERLAP
 
 
 def format_scale(value: int | None = None) -> str:
@@ -78,126 +124,183 @@ def format_scale(value: int | None = None) -> str:
     return f"1:{s:,}".replace(",", " ")
 
 
-def page_geometry(name: str | None = None, scale_denom: int | None = None) -> PageGeometry:
-    """Compute map-frame / cell geometry for a page format and scale."""
+def page_geometry(name: str | None = None, scale_denom: int | None = None,
+                  overlap_percent: int | None = None) -> PageGeometry:
+    """Compute map-frame / cell geometry for a page format, scale and overlap."""
     name = name or page_format()
     if name not in PAGE_FORMATS:
         name = DEFAULT_PAGE_FORMAT
     s = scale_denom if scale_denom is not None else scale()
+    ov = overlap_percent if overlap_percent is not None else overlap()
     page_w, page_h = PAGE_FORMATS[name]
-    margin = MARGIN_MM
-    map_w = page_w - 2.0 * margin
-    map_h = page_h - 2.0 * margin
+    map_w = page_w - 2.0 * MARGIN_SIDE_MM
+    map_h = page_h - MARGIN_TOP_MM - MARGIN_BOTTOM_MM
+    frame_w = map_w / 1000.0 * s  # ground metres covered by the map frame
+    frame_h = map_h / 1000.0 * s
+    cell_w = frame_w * (1.0 - ov / 100.0)
+    cell_h = frame_h * (1.0 - ov / 100.0)
     return PageGeometry(
-        name=name,
-        page_w=page_w,
-        page_h=page_h,
-        margin=margin,
-        map_x=margin,
-        map_y=margin,
-        map_w=map_w,
-        map_h=map_h,
-        cell_w=map_w / 1000.0 * s,
-        cell_h=map_h / 1000.0 * s,
+        name=name, scale=s, overlap=ov,
+        page_w=page_w, page_h=page_h,
+        margin_side=MARGIN_SIDE_MM, margin_top=MARGIN_TOP_MM, margin_bottom=MARGIN_BOTTOM_MM,
+        map_w=map_w, map_h=map_h,
+        cell_w=cell_w, cell_h=cell_h,
+        pad_w=(frame_w - cell_w) / 2.0, pad_h=(frame_h - cell_h) / 2.0,
     )
 
-# ---------------------------------------------------------------------------
-# Project / data locations
-# ---------------------------------------------------------------------------
-PROJECT_DIR = Path.home() / "Documents" / "QGIS_Kartenwerk"
-PROJECT_PATH = PROJECT_DIR / "kartenwerk.qgz"
-GPKG_PATH = PROJECT_DIR / "kartenwerk.gpkg"
-CACHE_DIR = PROJECT_DIR / "cache"
-DEFAULT_OUTPUT_DIR = PROJECT_DIR / "ausgabe"
-
-AOI_LAYER = "arbeitsgebiet"
-GRID_LAYER = "raster"
-AOI_GROUP = "Arbeitsgebiet"
-GRID_GROUP = "Raster"
-BASEMAP_GROUP = "Basiskarten"
-OPTIONAL_GROUP = "Optional (ForstBW / Schutzgebiete)"
 
 # ---------------------------------------------------------------------------
-# Web services (verified 2026-11)
+# Layer names
 # ---------------------------------------------------------------------------
-OPENTOPO_URL = "https://tile.opentopomap.org/{z}/{x}/{y}.png"
-OPENTOPO_NAME = "OpenTopoMap"
+AOI_LAYER = "work_area"
+GRID_LAYER = "sheet_grid"
+# Names used by version 1 (German), still recognised in existing projects.
+LEGACY_AOI_LAYERS = ("arbeitsgebiet",)
+LEGACY_GRID_LAYERS = ("raster",)
+AOI_GROUP = "Work area"
+GRID_GROUP = "Sheet grid"
+BASEMAP_GROUP = "Basemaps"
 
-TOPO_WMS = "https://sgx.geodatenzentrum.de/wms_topplus_open"
-DOP_RGB_WMS = "https://owsproxy.lgl-bw.de/owsproxy/ows/WMS_LGL-BW_ATKIS_DOP_20_C"
-DOP_CIR_WMS = "https://owsproxy.lgl-bw.de/owsproxy/ows/WMS_LGL-BW_ATKIS_DOP_20_CIR"
-DGM_WMS = "https://owsproxy.lgl-bw.de/owsproxy/ows/WMS_LGL-BW_ATKIS_DGM_025"
+GPKG_NAME = "kartenwerk.gpkg"
 
-TOPO_LAYERS = {
-    "web": ("web", "TopPlusOpen"),
-    "web_light": ("web_light", "TopPlusOpen Light"),
-    "web_grau": ("web_grau", "TopPlusOpen Graustufen"),
-}
 
-IMAGERY_LAYERS = {
-    "IMAGES_DOP_20_RGB": ("IMAGES_DOP_20_RGB", "DOP20 Farbe"),
-    "IMAGES_DOP_20_CIR": ("IMAGES_DOP_20_CIR", "DOP20 Infrarot (CIR)"),
-}
+# ---------------------------------------------------------------------------
+# Locations (evaluated at call time: they follow the open project)
+# ---------------------------------------------------------------------------
+def data_dir() -> Path:
+    """Folder of the saved QGIS project, else <QGIS profile>/kartenwerk."""
+    home = QgsProject.instance().homePath()
+    if home:
+        path = Path(home)
+    else:
+        path = Path(QgsApplication.qgisSettingsDirPath()) / "kartenwerk"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
 
-DGM_LAYER = ("DGM025_Hoehen_Graustufen", "DGM 25 Graustufen")
 
-WMS_CRS = "EPSG:25832"
-PROJECT_CRS = "EPSG:25832"
+def gpkg_path() -> Path:
+    return data_dir() / GPKG_NAME
+
+
+def default_output_dir() -> Path:
+    return data_dir() / "output"
+
+
+_cache_override: Path | None = None
+
+
+def set_cache_dir(path: Path | None) -> None:
+    """Override the cache folder (used by the headless tests)."""
+    global _cache_override
+    _cache_override = Path(path) if path else None
+
+
+def cache_dir() -> Path:
+    path = _cache_override or Path(tempfile.gettempdir()) / "kartenwerk_cache"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
 
 # ---------------------------------------------------------------------------
 # Persisted settings
 # ---------------------------------------------------------------------------
 _SETTINGS_PREFIX = "kartenwerk"
+AUTO = "auto"
+
+# Keys from version 1. They held BW-specific values (e.g. attribution text with
+# a hard-coded "UTM 32N"), so they are removed instead of migrated.
+_LEGACY_KEYS = (
+    "front_layer", "back_layer", "front_source", "back_source", "topo_style", "imagery",
+)
 
 
 def _defaults() -> dict:
     return {
-        "output_dir": str(DEFAULT_OUTPUT_DIR),
-        "topo_style": "web",
-        "imagery": "IMAGES_DOP_20_RGB",
+        "output_dir": "",  # empty → <data dir>/output
         "dpi": DPI,
         "auto_number": True,
         "open_folder": True,
         "page_format": DEFAULT_PAGE_FORMAT,
         "scale": DEFAULT_SCALE,
-        "front_layer": "",
-        "back_layer": "",
+        "overlap": DEFAULT_OVERLAP,
+        # "auto", a catalog key from sources.py, or "layer:<name>"
+        "front_basemap": AUTO,
+        "back_basemap": AUTO,
         "front_format": "PNG",
         "back_format": "PNG",
         "jpeg_quality": 92,
-        "front_source": "UTM 32N · © OpenTopoMap (CC-BY-SA) · © OpenStreetMap-Mitwirkende",
-        "back_source": "UTM 32N · © LGL BW · ATKIS DOP20",
+        # optional override; empty → the source's own attribution
+        "front_attribution": "",
+        "back_attribution": "",
     }
 
 
 def get_setting(key: str):
-    defaults = _defaults()
-    value = QgsSettings().value(f"{_SETTINGS_PREFIX}/{key}", defaults.get(key))
-    return value
+    return QgsSettings().value(f"{_SETTINGS_PREFIX}/{key}", _defaults().get(key))
 
 
 def set_setting(key: str, value) -> None:
     QgsSettings().setValue(f"{_SETTINGS_PREFIX}/{key}", value)
 
 
+def to_bool(value) -> bool:
+    """QSettings (INI backend) returns booleans as 'true'/'false' strings."""
+    if isinstance(value, str):
+        return value.strip().lower() in ("true", "1", "yes", "on")
+    return bool(value)
+
+
+def get_bool(key: str) -> bool:
+    return to_bool(get_setting(key))
+
+
+def get_int(key: str) -> int:
+    try:
+        return int(get_setting(key))
+    except (TypeError, ValueError):
+        return int(_defaults()[key])
+
+
+# Version 1 saved this fixed output folder whenever the settings dialog was confirmed.
+_LEGACY_OUTPUT_DIR = Path.home() / "Documents" / "QGIS_Kartenwerk" / "ausgabe"
+
+
+def remove_legacy_settings() -> None:
+    settings = QgsSettings()
+    for key in _LEGACY_KEYS:
+        settings.remove(f"{_SETTINGS_PREFIX}/{key}")
+    saved = str(settings.value(f"{_SETTINGS_PREFIX}/output_dir", "") or "")
+    if saved and Path(os.path.expanduser(saved)) == _LEGACY_OUTPUT_DIR:
+        settings.remove(f"{_SETTINGS_PREFIX}/output_dir")  # follow the project folder instead
+
+
 def output_dir() -> Path:
-    path = Path(os.path.expanduser(str(get_setting("output_dir"))))
+    value = str(get_setting("output_dir") or "").strip()
+    path = Path(os.path.expanduser(value)) if value else default_output_dir()
     path.mkdir(parents=True, exist_ok=True)
     return path
 
 
-def cache_dir() -> Path:
-    CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    return CACHE_DIR
-
-
-def wms_uri(base_url: str, layer: str, fmt: str = "image/png") -> str:
-    return (
-        f"url={base_url}&layers={layer}&styles=&format={fmt}"
-        f"&crs={WMS_CRS}"
-    )
+def export_settings() -> dict:
+    """Snapshot of all settings used by the exporter."""
+    return {
+        "output_dir": str(output_dir()),
+        "page_format": page_format(),
+        "scale": scale(),
+        "overlap": overlap(),
+        "dpi": get_int("dpi"),
+        "auto_number": get_bool("auto_number"),
+        "open_folder": get_bool("open_folder"),
+        "front_basemap": str(get_setting("front_basemap") or AUTO),
+        "back_basemap": str(get_setting("back_basemap") or AUTO),
+        "front_format": str(get_setting("front_format") or "PNG").upper(),
+        "back_format": str(get_setting("back_format") or "PNG").upper(),
+        "jpeg_quality": get_int("jpeg_quality"),
+        "front_attribution": str(get_setting("front_attribution") or ""),
+        "back_attribution": str(get_setting("back_attribution") or ""),
+    }
 
 
 def format_coord(value: float) -> str:
-    """German thousands separators, no decimals."""
-    return f"{int(round(value)):,}".replace(",", ".")
+    """Metres with a space as thousands separator (SI style), e.g. '5 415 000'."""
+    return f"{int(round(value)):,}".replace(",", " ")
