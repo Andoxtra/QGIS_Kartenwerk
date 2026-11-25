@@ -763,53 +763,120 @@ def overview_cells(sheets: list[dict]) -> list[tuple[int, int, dict | None]]:
     return cells
 
 
-def _overview_image(sheets: list[dict], aspect: float) -> tuple[QImage, int, int]:
-    """Diagram of the selected sheets; ``aspect`` = sheet width / height."""
+DEFAULT_OVERVIEW_COLOR = "#c8005a"
+
+
+def overview_diagram_size(sheets: list[dict], geom: config.PageGeometry) -> tuple[int, int, float, float]:
+    """(rows, cols, width mm, height mm) of the overview diagram / map on the overview page.
+
+    The diagram keeps the true sheet proportions, uses the page width and 55 % of the
+    page height, with at most 18 mm per sheet row.
+    """
+    cells = overview_cells(sheets)
+    cols = max(c[0] for c in cells) + 1
+    rows = max(c[1] for c in cells) + 1
+    aspect = geom.cell_w / geom.cell_h
+    margin = geom.margin_side
+    avail_w = geom.page_w - 2 * margin
+    avail_h = (geom.page_h - 2 * margin) * 0.55
+    cell_h_mm = min(avail_w / (cols * aspect), avail_h / rows, 18.0)
+    return rows, cols, cell_h_mm * aspect * cols, cell_h_mm * rows
+
+
+def _halo_text(painter: QPainter, rect: QRectF, text: str, font: QFont, color: QColor) -> None:
+    """Centered text in ``color`` with a white halo, readable on any map."""
+    from qgis.PyQt.QtGui import QFontMetricsF, QPainterPath
+
+    metrics = QFontMetricsF(font)
+    width = metrics.horizontalAdvance(text) if hasattr(metrics, "horizontalAdvance") \
+        else metrics.width(text)
+    x = rect.x() + (rect.width() - width) / 2.0
+    y = rect.y() + (rect.height() + metrics.ascent() - metrics.descent()) / 2.0
+    path = QPainterPath()
+    path.addText(QPointF(x, y), font, text)
+    halo = max(2.0, font.pixelSize() * 0.18)
+    painter.strokePath(path, QPen(QColor(255, 255, 255, 230), halo, Qt.SolidLine, Qt.RoundCap,
+                                  Qt.RoundJoin))
+    painter.fillPath(path, color)
+
+
+def _overview_image(sheets: list[dict], aspect: float, background: QImage | None = None,
+                    color: str = DEFAULT_OVERVIEW_COLOR) -> tuple[QImage, int, int]:
+    """Diagram of the selected sheets; ``aspect`` = sheet width / height.
+
+    With ``background`` (a map of exactly the rows × cols block, north up) the sheets are
+    drawn on top of it: other cells veiled, exported sheets outlined in ``color`` with
+    their number and id. Without it, the plain diagram.
+    """
     cells = overview_cells(sheets)
     grid_cols = max(c[0] for c in cells) + 1
     grid_rows = max(c[1] for c in cells) + 1
 
-    cell_w = 240
-    cell_h = max(40, int(round(cell_w / aspect)))
-    pad = 6
-    image = QImage(grid_cols * cell_w + pad * 2, grid_rows * cell_h + pad * 2,
-                   QImage.Format_ARGB32_Premultiplied)
-    image.fill(QColor("white"))
+    if background is not None:
+        image = background.convertToFormat(QImage.Format_ARGB32_Premultiplied)
+        pad = 0.0
+        cell_w = image.width() / grid_cols
+        cell_h = image.height() / grid_rows
+    else:
+        cell_w = 240.0
+        cell_h = float(max(40, int(round(cell_w / aspect))))
+        pad = 6.0
+        image = QImage(int(grid_cols * cell_w + pad * 2), int(grid_rows * cell_h + pad * 2),
+                       QImage.Format_ARGB32_Premultiplied)
+        image.fill(QColor("white"))
     painter = QPainter(image)
     painter.setRenderHint(QPainter.Antialiasing, True)
 
     base = min(cell_w, cell_h)
     num_font = QFont()
-    num_font.setPixelSize(int(base * 0.34))
+    num_font.setPixelSize(max(6, int(base * 0.34)))
     num_font.setBold(True)
     id_font = QFont()
-    id_font.setPixelSize(int(base * 0.12))
+    id_font.setPixelSize(max(4, int(base * 0.12)))
+    accent = QColor(color) if QColor(color).isValid() else QColor(DEFAULT_OVERVIEW_COLOR)
+    line = max(1.5, base * 0.025)
 
     for xi, yi, sheet in cells:
-        x = pad + xi * cell_w
-        y = pad + yi * cell_h
-        rect = QRect(x, y, cell_w - 1, cell_h - 1)
+        rect = QRectF(pad + xi * cell_w, pad + yi * cell_h, cell_w, cell_h)
+        if background is not None:
+            if sheet is None:
+                painter.fillRect(rect, QColor(255, 255, 255, 140))  # veil: not exported
+                continue
+            painter.setPen(QPen(accent, line))
+            painter.setBrush(Qt.NoBrush)
+            painter.drawRect(rect.adjusted(line / 2, line / 2, -line / 2, -line / 2))
+            _halo_text(painter, QRectF(rect.x(), rect.y(), rect.width(), rect.height() * 0.58),
+                       sheet_number_text(sheet, "?"), num_font, accent)
+            _halo_text(painter, QRectF(rect.x(), rect.y() + rect.height() * 0.52, rect.width(),
+                                       rect.height() * 0.42), str(sheet["sheet_id"]), id_font,
+                       accent)
+            continue
+        box = rect.adjusted(0, 0, -1, -1)
         if sheet is None:
             painter.setPen(QPen(QColor(212, 212, 212)))
             painter.setBrush(QColor(246, 246, 246))
-            painter.drawRect(rect)
+            painter.drawRect(box)
             continue
         painter.setPen(QPen(QColor(90, 90, 90)))
         painter.setBrush(QColor(232, 242, 255))
-        painter.drawRect(rect)
+        painter.drawRect(box)
         painter.setFont(num_font)
         painter.setPen(QColor(15, 60, 120))
-        painter.drawText(QRect(x, y, cell_w, int(cell_h * 0.58)), Qt.AlignCenter,
+        painter.drawText(QRectF(rect.x(), rect.y(), cell_w, cell_h * 0.58), Qt.AlignCenter,
                          sheet_number_text(sheet, "?"))
         painter.setFont(id_font)
         painter.setPen(QColor(80, 80, 80))
-        painter.drawText(QRect(x, y + int(cell_h * 0.52), cell_w, int(cell_h * 0.42)),
+        painter.drawText(QRectF(rect.x(), rect.y() + cell_h * 0.52, cell_w, cell_h * 0.42),
                          Qt.AlignCenter, str(sheet["sheet_id"]))
+    if background is not None:  # thin frame around the whole map
+        painter.setPen(QPen(QColor(40, 40, 40), max(1.0, line * 0.5)))
+        painter.setBrush(Qt.NoBrush)
+        painter.drawRect(QRectF(0.5, 0.5, image.width() - 1, image.height() - 1))
     painter.end()
     return image, grid_rows, grid_cols
 
 
-def _overview_legend_html(sheets: list[dict], columns: int = 4) -> str:
+def _legend_items(sheets: list[dict]) -> list[str]:
     ordered = sorted(
         sheets,
         key=lambda s: (
@@ -820,18 +887,45 @@ def _overview_legend_html(sheets: list[dict], columns: int = 4) -> str:
     )
     items = []
     for sheet in ordered:
-        line = f"<b>{sheet_number_text(sheet, '?')}</b> &nbsp;{html.escape(str(sheet['sheet_id']))}"
+        line = f"<b>{sheet_number_text(sheet, '?')}</b>&nbsp;{html.escape(str(sheet['sheet_id']))}"
         if sheet.get("sheet_name"):
-            line += f" &nbsp;{html.escape(str(sheet['sheet_name']))}"
+            line += f"&nbsp;{html.escape(str(sheet['sheet_name']))}"
         items.append(line)
+    return items
 
-    cols: list[list[str]] = [[] for _ in range(columns)]
-    for index, item in enumerate(items):
-        cols[index % columns].append(item)
 
-    body = "<table width='100%' cellspacing='0' cellpadding='2'><tr>"
+def _legend_text_length(sheet: dict) -> int:
+    length = len(sheet_number_text(sheet, "?")) + 1 + len(str(sheet["sheet_id"]))
+    if sheet.get("sheet_name"):
+        length += 1 + len(str(sheet["sheet_name"]))
+    return length
+
+
+def legend_layout(sheets: list[dict], width: float, first_h: float, next_h: float):
+    """Fit the sheet list: (font pt, columns, rows on the first page, rows on later pages).
+
+    Tries smaller fonts and more columns until the list fits on the first page; with
+    very large series it continues on extra pages at the smallest size.
+    """
+    longest = max(_legend_text_length(s) for s in sheets)
+    for size in (6.0, 5.5, 5.0, 4.5, 4.0):
+        pt = size * _K
+        line_h = pt * 0.3528 * 1.5  # mm per text line (QGIS HTML labels need ~1.5 × font size)
+        col_w = longest * pt * 0.3528 * 0.62 + 3.0  # mm per column incl. gap
+        columns = max(1, int(width // col_w))
+        rows_first = max(1, int(first_h // line_h))
+        rows_next = max(1, int(next_h // line_h))
+        if columns * rows_first >= len(sheets) or size == 4.0:
+            return pt, columns, rows_first, rows_next
+    raise AssertionError("unreachable")
+
+
+def _legend_html(items: list[str], columns: int, rows: int, pt: float) -> str:
+    """Items in reading order down the columns."""
+    cols = [items[c * rows:(c + 1) * rows] for c in range(columns)]
+    body = "<table width='100%' cellspacing='0' cellpadding='0'><tr>"
     for col in cols:
-        body += (f"<td valign='top' style='font-size:{6 * _K:.2f}pt'>" + "<br/>".join(col)
+        body += (f"<td valign='top' style='font-size:{pt:.2f}pt'>" + "<br/>".join(col)
                  + "</td>")
     return body + "</tr></table>"
 
@@ -841,11 +935,15 @@ def export_overview(
     sheets: list[dict],
     out_path: Path,
     dpi: int = config.DPI,
+    background: QImage | None = None,
+    attribution: str = "",
+    color: str = DEFAULT_OVERVIEW_COLOR,
 ) -> Path:
+    """Overview page; ``background`` is an optional map of the sheet block (north up)."""
     geom = config.page_geometry()
     _use_scale(geom)
     aspect = geom.cell_w / geom.cell_h
-    image, grid_rows, grid_cols = _overview_image(sheets, aspect)
+    image, grid_rows, grid_cols = _overview_image(sheets, aspect, background, color)
     zone = crs_mod.zone_label(int(sheets[0]["utm_zone"]), str(sheets[0]["hemisphere"]))
     margin = geom.margin_side  # keeps everything inside the printer-safe zone
 
@@ -862,11 +960,7 @@ def export_overview(
         margin, margin, geom.page_w - 2 * margin, u(8.0), align=Qt.AlignLeft,
     )
 
-    avail_w = geom.page_w - 2 * margin
-    avail_h = (geom.page_h - 2 * margin) * 0.55
-    cell_h_mm = min(avail_w / (grid_cols * aspect), avail_h / grid_rows, 18.0)
-    diag_w = cell_h_mm * aspect * grid_cols
-    diag_h = cell_h_mm * grid_rows
+    _, _, diag_w, diag_h = overview_diagram_size(sheets, geom)
     diag_x = (geom.page_w - diag_w) / 2.0
     diag_y = margin + u(10.0)
 
@@ -882,11 +976,40 @@ def export_overview(
     picture.setPicturePath(str(tmp))
 
     legend_y = diag_y + diag_h + 3.0
-    _label(
-        layout, "overview_legend", _overview_legend_html(sheets),
-        margin, legend_y, geom.page_w - 2 * margin, (geom.page_h - margin - u(5.5)) - legend_y,
-        align=Qt.AlignLeft, valign=Qt.AlignTop,
-    )
+    if background is not None and attribution:
+        _label(layout, "overview_attribution",
+               _span(f"Overview map: {html.escape(attribution)}", 5, color=GREY),
+               margin, diag_y + diag_h + 0.6, geom.page_w - 2 * margin, u(2.4),
+               align=Qt.AlignCenter)
+        legend_y += u(2.4)
+    # Sheet list: shrinks and adds columns to fit; very large series continue on extra pages.
+    width = geom.page_w - 2 * margin
+    first_h = (geom.page_h - margin - u(5.5)) - legend_y
+    next_top = margin + u(10.0)
+    next_h = (geom.page_h - margin - u(5.5)) - next_top
+    pt, columns, rows_first, rows_next = legend_layout(sheets, width, first_h, next_h)
+    items = _legend_items(sheets)
+    chunks = [items[:columns * rows_first]]
+    rest = items[columns * rows_first:]
+    while rest:
+        chunks.append(rest[:columns * rows_next])
+        rest = rest[columns * rows_next:]
+    for page_index, chunk in enumerate(chunks):
+        if page_index == 0:
+            y, rows = legend_y, rows_first
+        else:
+            page = QgsLayoutItemPage(layout)
+            page.setPageSize(QgsLayoutSize(geom.page_w, geom.page_h, _MM))
+            layout.pageCollection().addPage(page)
+            _label(layout, f"overview_title_{page_index}",
+                   _span(f"Sheet overview – list continued ({page_index + 1}/{len(chunks)})", 10,
+                         bold=True), margin, margin, width, u(8.0), page=page_index,
+                   align=Qt.AlignLeft)
+            y, rows = next_top, rows_next
+        _label(layout, f"overview_legend_{page_index}" if page_index else "overview_legend",
+               _legend_html(chunk, columns, min(rows, math.ceil(len(chunk) / columns)), pt),
+               margin, y, width, (geom.page_h - margin - u(5.5)) - y, page=page_index,
+               align=Qt.AlignLeft, valign=Qt.AlignTop)
     _label(layout, "overview_date", _span(f"Printed {today()}", 5, color=GREY),
            margin, geom.page_h - margin - u(2.5), u(60), u(2.5), align=Qt.AlignLeft)
     if geom.overlap:

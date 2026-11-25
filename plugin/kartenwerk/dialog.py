@@ -4,7 +4,9 @@ from __future__ import annotations
 from pathlib import Path
 
 from qgis.core import QgsMapLayer, QgsProject
+from qgis.gui import QgsColorButton
 from qgis.PyQt.QtCore import Qt
+from qgis.PyQt.QtGui import QColor
 from qgis.PyQt.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -71,6 +73,7 @@ class SettingsDialog(QDialog):
         self._update_quality_enabled()
         self._update_auto_note()
         self._update_two_up()
+        self._update_scale_hint()
 
     # ------------------------------------------------------------------
     # tabs
@@ -82,10 +85,22 @@ class SettingsDialog(QDialog):
             self.page_combo.addItem(f"{name} ({w:.0f} × {h:.0f} mm)", name)
         self._select_data(self.page_combo, config.page_format())
 
-        self.scale_combo = QComboBox()
-        for denom in sorted(config.SCALES):
-            self.scale_combo.addItem(config.SCALES[denom], denom)
-        self._select_data(self.scale_combo, config.scale())
+        self.scale_spin = QSpinBox()
+        self.scale_spin.setPrefix("1:")
+        self.scale_spin.setRange(config.MIN_SCALE, config.MAX_SCALE)
+        self.scale_spin.setSingleStep(config.SCALE_STEP)
+        self.scale_spin.setGroupSeparatorShown(True)
+        self.scale_spin.setValue(config.scale())
+        self.scale_spin.setToolTip(
+            f"1:{config.MIN_SCALE:,} to 1:{config.MAX_SCALE:,}, rounded to "
+            f"{config.SCALE_ROUND}. Smaller numbers zoom in (larger text, less area per sheet)."
+            .replace(",", " "))
+        self.scale_spin.editingFinished.connect(self._snap_scale)
+        self.scale_spin.valueChanged.connect(self._update_scale_hint)
+        self.scale_hint = _note(
+            f"Below 1:{config.SHARP_SCALE_LIMIT:,}".replace(",", " ")
+            + " OpenTopoMap and Esri imagery are enlarged and look soft; national aerial "
+            "images (e.g. DOP20) stay sharp. The 1 km grid lines are 200 mm apart at 1:5 000.")
 
         self.overlap_combo = QComboBox()
         for percent, text in config.OVERLAPS.items():
@@ -111,6 +126,19 @@ class SettingsDialog(QDialog):
         swap_button.clicked.connect(self._swap)
         self.auto_note = _note("")
 
+        self.overview_combo = QComboBox()
+        self.overview_combo.setToolTip("Map shown behind the sheet diagram on Overview.pdf")
+        self.overview_color = QgsColorButton()
+        self.overview_color.setColor(QColor(str(config.get_setting("overview_color")
+                                                or layout.DEFAULT_OVERVIEW_COLOR)))
+        self.overview_color.setDefaultColor(QColor(layout.DEFAULT_OVERVIEW_COLOR))
+        self.overview_color.setShowNull(False)
+        self.overview_color.setAllowOpacity(False)
+        self.overview_color.setColorDialogTitle("Overview: sheet outline and number colour")
+        self.overview_color.setToolTip("Sheet outlines and numbers on the overview map. Change "
+                                       "it if they are hard to read on your map.")
+        self._populate_overview(str(config.get_setting("overview_basemap") or "opentopomap"))
+
         self.overlay_list = QListWidget()
         self.overlay_list.setMaximumHeight(96)
         self.overlay_list.setToolTip("Your own vector layers (e.g. a GPX route or waypoints), "
@@ -122,7 +150,8 @@ class SettingsDialog(QDialog):
 
         form = QFormLayout()
         form.addRow("Page format", self.page_combo)
-        form.addRow("Scale", self.scale_combo)
+        form.addRow("Scale", self.scale_spin)
+        form.addRow("", self.scale_hint)
         form.addRow("Sheet overlap", self.overlap_combo)
         form.addRow("", _note(
             "Page format, scale and overlap set the grid cell size. Regenerate the grid after "
@@ -130,6 +159,7 @@ class SettingsDialog(QDialog):
         form.addRow("Front (map)", self._row(self.front_combo, refresh_button))
         form.addRow("Back (imagery)", self._row(self.back_combo, swap_button))
         form.addRow("", self.auto_note)
+        form.addRow("Overview map", self._row(self.overview_combo, self.overview_color))
         form.addRow("Overlays", self.overlay_list)
         form.addRow("", self.overlays_back)
         form.addRow("", _note("Overlays are saved in this project. Add a GPX file to QGIS "
@@ -273,7 +303,32 @@ class SettingsDialog(QDialog):
 
     def _refresh_layers(self):
         self._populate_basemaps()
+        self._populate_overview(self.overview_combo.currentData())
         self._populate_overlays(self.overlay_ids())
+
+    def _populate_overview(self, value: str):
+        combo = self.overview_combo
+        combo.blockSignals(True)
+        combo.clear()
+        combo.addItem("None (plain sheet diagram)", "none")
+        for role in (sources.TOPO, sources.IMAGERY):
+            combo.insertSeparator(combo.count())
+            for source in sources.for_role(role):
+                combo.addItem(source.name, source.key)
+                combo.setItemData(combo.count() - 1, source.note or source.attribution,
+                                  Qt.ToolTipRole)
+        rasters = sorted((layer for layer in QgsProject.instance().mapLayers().values()
+                          if layer.type() == QgsMapLayer.RasterLayer
+                          and not layer.customProperty("kartenwerk_source")),
+                         key=lambda layer: layer.name().lower())
+        if rasters:
+            combo.insertSeparator(combo.count())
+            for layer in rasters:
+                combo.addItem(f"Project layer: {layer.name()}", f"layer:{layer.name()}")
+        combo.blockSignals(False)
+        self._select_data(combo, value)
+        if combo.currentData() is None:
+            self._select_data(combo, "opentopomap")
 
     def _populate_basemaps(self, front_value=None, back_value=None):
         front_value = self.front_combo.currentData() if front_value is None else front_value
@@ -374,6 +429,14 @@ class SettingsDialog(QDialog):
         self.offset2_dx.setEnabled(paper is not None)
         self.offset2_dy.setEnabled(paper is not None)
 
+    def _snap_scale(self):
+        snapped = config.normalize_scale(self.scale_spin.value())
+        if snapped != self.scale_spin.value():
+            self.scale_spin.setValue(snapped)
+
+    def _update_scale_hint(self, *args):
+        self.scale_hint.setVisible(self.scale_spin.value() < config.SHARP_SCALE_LIMIT)
+
     def _update_quality_enabled(self):
         jpeg = "JPEG" in (self.front_format.currentData(), self.back_format.currentData())
         self.jpeg_quality.setEnabled(jpeg)
@@ -415,7 +478,7 @@ class SettingsDialog(QDialog):
         return {
             "output_dir": str(Path(output).expanduser()) if output else "",
             "page_format": self.page_combo.currentData(),
-            "scale": int(self.scale_combo.currentData()),
+            "scale": config.normalize_scale(self.scale_spin.value()),
             "overlap": int(self.overlap_combo.currentData()),
             "printer_margin": int(self.margin_combo.currentData()),
             "front_basemap": self.front_combo.currentData() or config.AUTO,
@@ -429,6 +492,8 @@ class SettingsDialog(QDialog):
             "auto_number": self.auto_number.isChecked(),
             "two_up": self.two_up.isChecked(),
             "render_cache": self.render_cache.isChecked(),
+            "overview_basemap": self.overview_combo.currentData() or "opentopomap",
+            "overview_color": self.overview_color.color().name(),
             "duplex_dx": self.offset_dx.value(),
             "duplex_dy": self.offset_dy.value(),
             "duplex_2up_dx": self.offset2_dx.value(),

@@ -134,6 +134,32 @@ def main() -> int:
         dlg.offset_dx.setValue(9.0)
         check("duplex offset limited to ±5 mm", dlg.offset_dx.value() == 5.0, dlg.offset_dx.value())
         values = dlg.values()
+        spin = dlg.scale_spin
+        check("scale field: 1:5 000 – 1:100 000, arrows step 2 500",
+              (spin.minimum(), spin.maximum(), spin.singleStep(), spin.prefix())
+              == (5000, 100000, 2500, "1:"),
+              (spin.minimum(), spin.maximum(), spin.singleStep(), spin.prefix()))
+        spin.setValue(17300)
+        dlg._snap_scale()
+        check("typed scale rounded to 500", spin.value() == 17500
+              and dlg.values()["scale"] == 17500, spin.value())
+        check("no blur hint at 1:17 500", dlg.scale_hint.isHidden())
+        spin.setValue(7500)
+        check("blur hint below 1:10 000", not dlg.scale_hint.isHidden())
+        spin.setValue(100000)
+        check("1:100 000 accepted", dlg.values()["scale"] == 100000)
+        spin.setValue(config.DEFAULT_SCALE)
+        check("overview map defaults to OpenTopoMap",
+              dlg.overview_combo.currentData() == "opentopomap", dlg.overview_combo.currentData())
+        overview_items = [dlg.overview_combo.itemData(i) for i in range(dlg.overview_combo.count())]
+        check("overview map offers None, catalog sources", "none" in overview_items
+              and "esri_imagery" in overview_items, overview_items[:4])
+        check("overview colour default magenta-red", dlg.overview_color.color().name() == "#c8005a",
+              dlg.overview_color.color().name())
+        from qgis.PyQt.QtGui import QColor
+        dlg.overview_color.setColor(QColor("#00a0ff"))
+        check("overview colour returned", dlg.values()["overview_color"] == "#00a0ff"
+              and dlg.values()["overview_basemap"] == "opentopomap")
         check("printer margin choices", [dlg.margin_combo.itemData(i) for i in
                                          range(dlg.margin_combo.count())] == [5, 4, 3])
         check("dialog values complete", {"overlap", "printer_margin", "two_up", "render_cache",

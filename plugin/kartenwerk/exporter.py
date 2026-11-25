@@ -119,6 +119,37 @@ def _render_side(project, resolved: sources.Resolved, extent, crs, dpi, width_px
     return image, attribution, to_store
 
 
+def _overview_background(project, sheets: list[dict], settings: dict, utm, zone, hemisphere,
+                         dpi: int, use_cache: bool):
+    """Map of the exported sheet block for the overview page: (image, attribution) or (None, "")."""
+    setting = str(settings.get("overview_basemap") or "none").strip()
+    if setting == "none":
+        return None, ""
+    geom = config.page_geometry()
+    extent = QgsRectangle(min(s["e_min"] for s in sheets), min(s["n_min"] for s in sheets),
+                          max(s["e_max"] for s in sheets), max(s["n_max"] for s in sheets))
+    _, _, w_mm, h_mm = layout.overview_diagram_size(sheets, geom)
+    px_dpi = min(int(dpi), 300)
+    width = max(16, int(round(w_mm / 25.4 * px_dpi)))
+    height = max(16, int(round(h_mm / 25.4 * px_dpi)))
+    bbox = crs_mod.to_lonlat_bbox(extent, utm)
+    resolved = sources.resolve(project, sources.TOPO, setting, bbox, zone, hemisphere)
+    image, missing, key, hit = _basemap(project, resolved.layer, resolved.source, extent, utm,
+                                        px_dpi, width, height, use_cache)
+    attribution = resolved.attribution or resolved.layer.name()
+    white = bool(resolved.source and resolved.source.white_is_nodata)
+    if missing > (FALLBACK_THRESHOLD_WHITE if white else FALLBACK_THRESHOLD) \
+            and resolved.fallback is not None:
+        fallback = resolved.fallback
+        layer = sources.ensure_layer(project, fallback, zone, hemisphere)
+        image, missing, key, hit = _basemap(project, layer, fallback, extent, utm, px_dpi,
+                                            width, height, use_cache)
+        attribution = fallback.attribution
+    if key and not hit and missing <= COMPLETE:
+        cache.store(key, image)
+    return render._flatten(image), attribution
+
+
 def _north_info(extent, utm) -> dict:
     """Grid convergence, grid–magnetic angle (degrees, + = east) and MGRS square of a sheet."""
     centre = extent.center()
@@ -338,9 +369,18 @@ def export_sheets(
     if written_sheets:
         _write_index(out_dir, written_sheets, utm.authid())
         overview_path = None
+        overview_sheets = [s for s, _ in written_sheets]
+        background, overview_attribution = None, ""
+        try:
+            background, overview_attribution = _overview_background(
+                project, overview_sheets, settings, utm, zone, hemisphere, dpi, use_cache)
+        except Exception as exc:  # the overview still works as a plain diagram
+            result.warnings.append(f"Overview map could not be drawn ({exc}); "
+                                   "the overview shows the plain sheet diagram.")
         try:
             overview_path = layout.export_overview(
-                project, [s for s, _ in written_sheets], out_dir / "Overview.pdf", dpi)
+                project, overview_sheets, out_dir / "Overview.pdf", dpi, background,
+                overview_attribution, settings.get("overview_color") or "#c8005a")
         except Exception as exc:
             errors.append(f"Overview.pdf: {exc}")
         if len(result) > 1:

@@ -25,15 +25,14 @@ LANE_BOTTOM_MM = 7.0  # scale bar row + attribution row (eastings are labelled a
 DPI = 300
 GRID_SPACING_M = 1000.0
 
-# Available map scales (denominators). A smaller denominator zooms in further,
-# making text larger and more readable on paper at the cost of less area/sheet.
-SCALES = {
-    10000: "1:10 000",
-    12500: "1:12 500",
-    15000: "1:15 000",
-    20000: "1:20 000",
-    25000: "1:25 000",
-}
+# Map scale denominator: any value in this range, rounded to SCALE_ROUND. A smaller
+# denominator zooms in further (larger text, less area per sheet). Below 1:10 000
+# the worldwide basemaps (max. zoom 17) get enlarged and look soft.
+MIN_SCALE = 5000
+MAX_SCALE = 100000
+SCALE_ROUND = 500
+SCALE_STEP = 2500  # arrow-key step in the settings dialog
+SHARP_SCALE_LIMIT = 10000
 DEFAULT_SCALE = 15000
 
 # Available landscape page formats (width × height in millimetres).
@@ -111,13 +110,21 @@ def page_format() -> str:
     return name if name in PAGE_FORMATS else DEFAULT_PAGE_FORMAT
 
 
+def normalize_scale(value) -> int:
+    """Scale denominator rounded to SCALE_ROUND and clamped to MIN_SCALE…MAX_SCALE."""
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return DEFAULT_SCALE
+    if number != number:  # NaN
+        return DEFAULT_SCALE
+    rounded = int(round(number / SCALE_ROUND)) * SCALE_ROUND
+    return max(MIN_SCALE, min(MAX_SCALE, rounded))
+
+
 def scale() -> int:
     """Return the configured map scale denominator (validated)."""
-    try:
-        value = int(get_setting("scale") or DEFAULT_SCALE)
-    except (TypeError, ValueError):
-        value = DEFAULT_SCALE
-    return value if value in SCALES else DEFAULT_SCALE
+    return normalize_scale(get_setting("scale") or DEFAULT_SCALE)
 
 
 def safe_mm() -> float:
@@ -253,6 +260,10 @@ def _defaults() -> dict:
         "printer_margin": DEFAULT_PRINTER_MARGIN,
         "two_up": False,
         "render_cache": True,
+        # Overview page: map behind the sheet diagram ("none", catalog key, "layer:<name>")
+        # and the colour of sheet outlines/numbers on it.
+        "overview_basemap": "opentopomap",
+        "overview_color": "#c8005a",
         # Duplex offset of the back side in mm (see duplex_offset()).
         "duplex_dx": 0.0,
         "duplex_dy": 0.0,
@@ -351,6 +362,8 @@ def export_settings() -> dict:
         "auto_number": get_bool("auto_number"),
         "two_up": get_bool("two_up") and page_format() in TWO_UP_PAPER,
         "render_cache": get_bool("render_cache"),
+        "overview_basemap": str(get_setting("overview_basemap") or "opentopomap"),
+        "overview_color": str(get_setting("overview_color") or "#c8005a"),
         "open_folder": get_bool("open_folder"),
         "front_basemap": str(get_setting("front_basemap") or AUTO),
         "back_basemap": str(get_setting("back_basemap") or AUTO),

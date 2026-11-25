@@ -90,6 +90,14 @@ def unit_checks():
     top = [c for c in cells if c[1] == 0][0][2]
     check("overview: north row on top", top["sheet_id"] == "north")
     check("format_coord", config.format_coord(5415000) == "5 415 000", config.format_coord(5415000))
+    for raw, expected in ((17300, 17500), (12500, 12500), (3000, 5000), (250000, 100000),
+                          ("abc", config.DEFAULT_SCALE), (None, config.DEFAULT_SCALE),
+                          ("20000", 20000), (99760, 100000)):
+        check(f"normalize_scale({raw!r})", config.normalize_scale(raw) == expected,
+              config.normalize_scale(raw))
+    config.set_setting("scale", 12500)
+    check("a stored 1:12 500 stays valid", config.scale() == 12500, config.scale())
+    check("format_scale(100000)", config.format_scale(100000) == "1:100 000")
 
 
 def safe_zone_violations(layout_):
@@ -283,6 +291,67 @@ def feature_checks(work: Path):
     cache.set_cache_root(work / "render_cache")
     check("Esri imagery is not cacheable", sources.get("esri_imagery").cacheable is False)
 
+    # --- overview page with a map background ----------------------------------
+    block = [{"row": r, "col": c, "sheet_id": f"32N-R{r}C{c}", "sheet_no": i + 1,
+              "utm_zone": 32, "hemisphere": "N", "sheet_name": None,
+              "e_min": c * geom.cell_w, "e_max": (c + 1) * geom.cell_w,
+              "n_min": r * geom.cell_h, "n_max": (r + 1) * geom.cell_h}
+             for i, (r, c) in enumerate([(11, 5), (11, 6), (10, 5)])]  # 2×2 block, SE missing
+    rows_, cols_, w_mm, h_mm = layout.overview_diagram_size(block, geom)
+    aspect = geom.cell_w / geom.cell_h
+    expected_h = min((geom.page_w - 2 * geom.margin_side) / (2 * aspect),
+                     (geom.page_h - 2 * geom.margin_side) * 0.55 / 2, 18.0) * 2
+    check("overview size: 2×2 block, true sheet proportions",
+          (rows_, cols_) == (2, 2) and abs(h_mm - expected_h) < 1e-6
+          and abs(w_mm / h_mm - aspect) < 1e-6, (rows_, cols_, round(w_mm, 1), round(h_mm, 1)))
+    bg = QImage(400, int(400 / aspect), QImage.Format_RGB32)
+    bg.fill(QColor(60, 140, 60))
+    for colour in ("#c8005a", "#00a0ff"):
+        img, _, _ = layout._overview_image(block, aspect, bg, colour)
+        cw, ch = img.width() / 2, img.height() / 2
+        missing_cell = img.pixelColor(int(cw * 1.15), int(ch * 1.85))  # SE cell, not exported
+        kept = img.pixelColor(int(cw * 0.15), int(ch * 0.85))  # NW cell corner area
+        edge = img.pixelColor(int(cw * 0.5), 2)  # top outline of the NW cell
+        check(f"overview {colour}: unexported cell veiled, exported cell shows the map",
+              missing_cell.green() > 180 and (kept.red(), kept.green(), kept.blue()) == (60, 140, 60),
+              (missing_cell.name(), kept.name()))
+        target = QColor(colour)
+        check(f"overview {colour}: sheet outline in the chosen colour",
+              abs(edge.red() - target.red()) < 40 and abs(edge.blue() - target.blue()) < 40,
+              edge.name())
+    labels = []
+    original_label = layout._label
+    layout._label = lambda lay, item_id, *a, **k: labels.append(item_id) or original_label(
+        lay, item_id, *a, **k)
+    try:
+        plain = layout.export_overview(project, block, work / "ov_plain.pdf", 150)
+        plain_has = "overview_attribution" in labels
+        labels.clear()
+        mapped = layout.export_overview(project, block, work / "ov_map.pdf", 150, bg,
+                                        "© OpenTopoMap (CC-BY-SA)")
+        mapped_has = "overview_attribution" in labels
+    finally:
+        layout._label = original_label
+    pages = [len(re.findall(rb"/Type\s*/Page[^s]", f.read_bytes())) for f in (plain, mapped)]
+    check("overview PDFs with and without map, 1 page each", pages == [1, 1], pages)
+    check("overview map attribution printed only with a map", mapped_has and not plain_has,
+          (plain_has, mapped_has))
+
+    def series(n_rows, n_cols):
+        return [{"row": 3000 + r, "col": 100 + c, "sheet_id": crs.sheet_id(32, "N", 3000 + r, 100 + c),
+                 "sheet_no": r * n_cols + c + 1, "utm_zone": 32, "hemisphere": "N",
+                 "sheet_name": None, "e_min": (100 + c) * geom.cell_w,
+                 "e_max": (101 + c) * geom.cell_w, "n_min": (3000 + r) * geom.cell_h,
+                 "n_max": (3001 + r) * geom.cell_h}
+                for r in range(n_rows) for c in range(n_cols)]
+
+    for n_rows, n_cols, expected_pages in ((12, 12, 1), (30, 30, 3)):  # A5: 180 + 531 per page
+        big = series(n_rows, n_cols)
+        pdf = layout.export_overview(project, big, work / f"ov_{n_rows}x{n_cols}.pdf", 100)
+        pages = len(re.findall(rb"/Type\s*/Page[^s]", pdf.read_bytes()))
+        check(f"overview list for {n_rows * n_cols} sheets fits ({expected_pages} page(s))",
+              pages == expected_pages, pages)
+
     # --- #5 duplex offset moves every back item, nothing on the front --------
     def item_rects(lay):
         return {it.id(): it.sceneBoundingRect() for it in lay.items()
@@ -417,7 +486,8 @@ def main(selected):
     legacy_migration(work)
     feature_checks(work)
     for fmt, scale_denom, margin in (("A5", 15000, 5), ("A2", 25000, 5), ("A4", 10000, 5),
-                                     ("A5", 15000, 3), ("A3", 20000, 4)):
+                                     ("A5", 15000, 3), ("A3", 20000, 4),
+                                     ("A2", 5000, 5), ("A5", 100000, 5), ("A4", 37500, 5)):
         config.set_setting("printer_margin", margin)
         layout_checks(fmt, scale_denom)
     config.set_setting("printer_margin", 5)

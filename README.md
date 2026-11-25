@@ -163,10 +163,12 @@ count.
 | Setting | Default | Description |
 |---|---|---|
 | Page format | `A5` | `A2`, `A3`, `A4` or `A5` landscape. Regenerate the grid after changing it. |
-| Scale | `1:15 000` | `1:10 000` – `1:25 000`. A smaller denominator gives larger, more readable text but less area per sheet. |
+| Scale | `1:15 000` | Any value from `1:5 000` to `1:100 000`, rounded to 500 (the arrows step by 2 500). A smaller number zooms in: larger, more readable text but less area per sheet. Below 1:10 000 OpenTopoMap and Esri imagery are enlarged and look soft (national services such as DOP20 or TopPlusOpen stay sharp), and the 1 km grid lines are up to 200 mm apart. Regenerate the grid after changing it. |
 | Sheet overlap | `5 %` | None, 5 % or 10 %. Neighbouring sheets share this strip; a dashed line marks where the next sheet begins. Regenerate the grid after changing it. |
 | Front (map) / Back (imagery) | Automatic | Automatic, a catalog source, or a raster layer from the project. The dialog shows what Automatic picks for the current work area. |
 | Overlays | none | Your own vector layers (e.g. a GPX route, waypoints), drawn on top of the map with their QGIS style. Optionally also on the back, without labels (they would be mirrored). Saved in the project. |
+| Overview map | OpenTopoMap | Miniature map behind the sheet diagram on `Overview.pdf`: any catalog source, any raster layer of the project, or **None** for the plain diagram. Its attribution is printed under it. |
+| Overview colour | magenta-red `#c8005a` | Colour of the sheet outlines and numbers on the overview map; change it if they are hard to read (e.g. yellow on dark aerial imagery). |
 
 **Printing tab**
 
@@ -205,13 +207,19 @@ on the back. Its map content is licensed by BKG and LGL BW, see
 
 ```
 output/
-├── Overview.pdf                    # sheet overview (north up) + list of all sheets
+├── Overview.pdf                    # miniature map of all sheets (north up) + list of all sheets
 ├── Sheet_01_32N-R1564C0088.pdf     # 2 pages: front topo, back mirrored imagery
 ├── Sheet_02_32N-R1564C0089.pdf
 ├── all_sheets.pdf                  # overview + all sheets (needs pdfunite or Ghostscript)
 ├── Print_2-per-page_A4.pdf         # optional: two sheets per A4 page, for home printers
 └── index.csv                       # comma-separated, UTF-8
 ```
+
+`Overview.pdf` shows the exported sheets on a small map (OpenTopoMap by default)
+at whatever scale fits the page: each sheet is outlined with its number and ID,
+cells inside the block that were not exported are veiled. The list of all sheets
+below shrinks and adds columns to fit; very large series continue on extra
+pages.
 
 `index.csv` columns:
 
@@ -242,7 +250,9 @@ frame at the chosen scale minus the overlap. A5 at 1:15 000 with 5 % overlap:
 | 3 mm | 190 × 129 mm | 2 850 × 1 935 m | 2 707.5 × 1 838.25 m | 2 244 × 1 524 px |
 
 The grid is always 1 km = 66.7 mm at 1:15 000. Changing the printer margin
-changes the cell size, so regenerate the grid afterwards.
+changes the cell size, so regenerate the grid afterwards. At large scales the
+row number in sheet IDs can have five digits (e.g. `32N-R13310C0500` in northern
+Scandinavia at 1:5 000); IDs stay unique and stable.
 
 ---
 
@@ -250,15 +260,17 @@ changes the cell size, so regenerate the grid afterwards.
 
 1. **Print at actual size.** Choose "Actual size" / 100 % and switch off "Fit
    to page" or "Shrink oversized pages", otherwise the scale is wrong.
-2. **Check the scale on the first print.** One grid square must measure:
+2. **Check the scale on the first print.** One grid square (1 km) must measure
+   1 000 000 ÷ scale in mm:
 
    | Scale | 1 km on paper |
    |---|---|
+   | 1:5 000 | 200 mm |
    | 1:10 000 | 100 mm |
-   | 1:12 500 | 80 mm |
    | 1:15 000 | 66.7 mm |
-   | 1:20 000 | 50 mm |
    | 1:25 000 | 40 mm |
+   | 1:50 000 | 20 mm |
+   | 1:100 000 | 10 mm |
 
    If the page was scaled anyway, the scale bar is still correct.
 3. **Duplex setting.** The paper must turn over **like a book page, left to
