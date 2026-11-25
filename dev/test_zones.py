@@ -68,6 +68,35 @@ check("WMS CRS IGN zone 31", sources.get("ign_ortho").request_crs(31, "N"), "EPS
 check("WMS CRS CH fallback", sources.get("swisstopo_image").request_crs(31, "N"), "EPSG:2056")
 check("Esri zmax", "zmax=17" in sources.layer_uri(sources.get("esri_imagery")), True)
 
+# --- MGRS 100 km squares: documented reference values ----------------------------
+# movable-type.co.uk (latlong-utm-mgrs + geodesy docs), Washington Monument, Wikipedia (Honolulu 4QFJ)
+for label, zone, e, n, expected in [
+    ("31N 303760/5787415 (odd zone)", 31, 303760, 5787415, "CT"),
+    ("31N 448251/5411932 (odd zone)", 31, 448251, 5411932, "DQ"),
+    ("Washington 18N 323487/4306483 (even zone)", 18, 323487, 4306483, "UJ"),
+    ("Honolulu 4N ~612000/2368000 (even zone)", 4, 612000, 2368000, "FJ"),
+]:
+    check(f"MGRS square {label}", crs.mgrs_square(zone, e, n), expected)
+row_letters = "ABCDEFGHJKLMNPQRSTUV"
+for zone in (31, 32):  # rows continue across the equator: 10 000 km = 5 full letter cycles
+    south = crs.mgrs_square(zone, 500000, 9_999_999)[1]
+    north = crs.mgrs_square(zone, 500000, 0)[1]
+    check(f"MGRS rows continue across the equator (zone {zone})",
+          (row_letters.index(south) + 1) % 20, row_letters.index(north))
+check("MGRS first row letter odd zone = A", crs.mgrs_square(31, 500000, 0)[1], "A")
+check("MGRS first row letter even zone = F", crs.mgrs_square(32, 500000, 0)[1], "F")
+check("MGRS easting out of range → None", crs.mgrs_square(32, 95000, 5300000), None)
+check("MGRS band Stuttgart", crs.mgrs_band(48.78), "U")
+check("MGRS band Tromsø (69.6° N)", crs.mgrs_band(69.65), "W")
+check("MGRS band 80° N", crs.mgrs_band(80.0), "X")
+check("MGRS band 79° S", crs.mgrs_band(-79.0), "C")
+check("MGRS band Sydney", crs.mgrs_band(-33.86), "H")
+check("MGRS label", crs.mgrs_label(18, -77.03, 38.89, ["UJ", "UJ"]), "18S UJ")
+check("MGRS label two squares", crs.mgrs_label(32, 9.0, 48.0, ["MU", "NU", "MU", "NU"]), "32U MU / NU")
+check("MGRS omitted in Norway exception (Bergen)", crs.mgrs_label(32, 5.3, 60.4, ["KN"]), None)
+check("MGRS omitted on Svalbard", crs.mgrs_label(33, 15.6, 78.2, ["WA"]), None)
+check("MGRS kept outside exceptions (Tromsø)", crs.mgrs_label(34, 18.95, 69.65, ["DC"]), "34W DC")
+
 # --- World Magnetic Model: every official NOAA test value ---------------------------
 worst = 0.0
 rows = 0

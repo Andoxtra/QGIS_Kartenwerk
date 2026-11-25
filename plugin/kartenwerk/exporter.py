@@ -11,7 +11,7 @@ from pathlib import Path
 
 from qgis.core import QgsProject, QgsRectangle, QgsVectorLayer
 
-from . import config, crs as crs_mod, grid, layout, render, sources, wmm
+from . import cache, config, crs as crs_mod, grid, layout, render, sources, wmm
 
 # A national source that leaves more than this share of a sheet empty (outside
 # its coverage) is replaced by the worldwide source for that sheet. Services that
@@ -71,29 +71,63 @@ def _export_two_up(project, jobs: list[dict], out_dir: Path, dpi: int, geom) -> 
             tmp.unlink(missing_ok=True)
 
 
-def _render_side(project, resolved: sources.Resolved, extent, crs, dpi, width_px, height_px,
-                 zone, hemisphere, cell=None):
-    """Render one side in memory. Returns (image, attribution of the source actually used)."""
-    source = resolved.source
-    retries = 2 if source is not None and source.kind == "xyz" else 0
+# A render is complete (and may be cached) when at most this share is missing.
+COMPLETE = 0.002
+
+
+def _basemap(project, layer, source, extent, crs, dpi, width_px, height_px, use_cache):
+    """Bare basemap for one sheet side: from the render cache when possible.
+
+    Returns (image, missing fraction, cache key or None, cache hit).
+    """
     white = bool(source and source.white_is_nodata)
-    image, missing = render.render_image(extent, [resolved.layer], crs, dpi, width_px, height_px,
-                                         retries=retries, white_is_missing=white, cell=cell)
+    cache_key = None
+    if use_cache and source is not None and source.cacheable:
+        cache_key = cache.key(source.key, layer.source(), crs.authid(), extent, width_px,
+                              height_px, dpi)
+        image = cache.load(cache_key)
+        if image is not None:
+            return image, render.missing_fraction(image, white), cache_key, True
+    retries = 2 if source is not None and source.kind == "xyz" else 0
+    image, missing = render.render_basemap(extent, [layer], crs, dpi, width_px, height_px,
+                                           retries=retries, white_is_missing=white)
+    return image, missing, cache_key, False
+
+
+def _render_side(project, resolved: sources.Resolved, extent, crs, dpi, width_px, height_px,
+                 zone, hemisphere, cell=None, overlays=None, overlay_labels=True,
+                 use_cache=False):
+    """Render one side in memory.
+
+    Returns (image, attribution of the source actually used, (cache key, basemap) to
+    store or None).
+    """
+    source = resolved.source
+    basemap, missing, cache_key, hit = _basemap(project, resolved.layer, source, extent, crs,
+                                                dpi, width_px, height_px, use_cache)
+    attribution = resolved.attribution
+    white = bool(source and source.white_is_nodata)
     threshold = FALLBACK_THRESHOLD_WHITE if white else FALLBACK_THRESHOLD
     if missing > threshold and resolved.fallback is not None:
         fallback = resolved.fallback
         layer = sources.ensure_layer(project, fallback, zone, hemisphere)
-        image, _ = render.render_image(extent, [layer], crs, dpi, width_px, height_px,
-                                       retries=2 if fallback.kind == "xyz" else 0, cell=cell)
-        return image, fallback.attribution
-    return image, resolved.attribution
+        basemap, missing, cache_key, hit = _basemap(project, layer, fallback, extent, crs, dpi,
+                                                    width_px, height_px, use_cache)
+        attribution = fallback.attribution
+    to_store = (cache_key, basemap) if cache_key and not hit and missing <= COMPLETE else None
+    image = render.compose(basemap, extent, crs, dpi, cell, overlays, overlay_labels)
+    return image, attribution, to_store
 
 
 def _north_info(extent, utm) -> dict:
-    """Grid convergence and grid–magnetic angle at the sheet centre (degrees, + = east)."""
+    """Grid convergence, grid–magnetic angle (degrees, + = east) and MGRS square of a sheet."""
     centre = extent.center()
     convergence = crs_mod.grid_convergence(centre.x(), centre.y(), utm)
     lon, lat = crs_mod.lonlat(centre.x(), centre.y(), utm)
+    zone = crs_mod.zone_from_authid(utm.authid())[0]
+    corners = [(extent.xMinimum(), extent.yMinimum()), (extent.xMaximum(), extent.yMinimum()),
+               (extent.xMinimum(), extent.yMaximum()), (extent.xMaximum(), extent.yMaximum())]
+    squares = [crs_mod.mgrs_square(zone, e, n) for e, n in corners]
     year = wmm.decimal_year()
     decl = wmm.declination(lat, lon, year)
     return {
@@ -102,6 +136,7 @@ def _north_info(extent, utm) -> dict:
         # Angle from grid north to magnetic north: what a compass user adds/subtracts.
         "grid_magnetic": None if decl is None else decl - convergence,
         "year": int(year),
+        "mgrs": crs_mod.mgrs_label(zone, lon, lat, squares),
     }
 
 
@@ -133,7 +168,7 @@ def export_sheets(
         raise ValueError("No sheets selected. Please select grid cells first.")
 
     if settings["auto_number"] and any(s["sheet_no"] in (None, "") for s in sheets):
-        grid.number_selected(grid_layer)
+        grid.number_missing(grid_layer)  # keeps existing numbers, fills the gaps
         sheets = grid.selected_sheets(grid_layer)
 
     sheets.sort(key=lambda s: (s["sheet_no"] if s["sheet_no"] not in (None, "") else 10**9,
@@ -167,10 +202,24 @@ def export_sheets(
     back = sources.resolve(project, sources.IMAGERY, settings["back_basemap"], bbox, zone, hemisphere)
     ext = {side: ".jpg" if settings[f"{side}_format"] == "JPEG" else ".png" for side in layout.SIDES}
 
+    # The user's own layers (e.g. a GPX route), stored per project.
+    overlay_layers, missing_overlays = [], []
+    for layer_id in config.project_overlays(project):
+        layer = project.mapLayer(layer_id)
+        (overlay_layers if layer is not None else missing_overlays).append(layer or layer_id)
+    side_overlays = {
+        "front": (overlay_layers, True),
+        "back": (overlay_layers if config.project_overlays_on_back(project) else [], False),
+    }
+
     out_dir = Path(settings["output_dir"]).expanduser()
     out_dir.mkdir(parents=True, exist_ok=True)
-    cache = config.cache_dir()
+    temp_dir = config.cache_dir()
     result = ExportResult()
+    if missing_overlays:
+        result.warnings.append(
+            f"{len(missing_overlays)} overlay layer(s) are no longer in the project and were "
+            "skipped. Check Settings → Map → Overlays.")
     written_sheets: list[tuple[dict, Path]] = []
     errors: list[str] = []
 
@@ -181,6 +230,7 @@ def export_sheets(
     run = uuid.uuid4().hex[:8] + "_"
     two_up = bool(settings.get("two_up")) and geom.name in config.TWO_UP_PAPER
     two_up_jobs: list[dict] = []
+    use_cache = bool(settings.get("render_cache", True))
 
     def finish(job: dict) -> None:
         """Wait for a sheet's images, then build its PDF (main thread: layouts are not thread-safe)."""
@@ -235,7 +285,7 @@ def export_sheets(
                     "sheet": sheet,
                     "stem": stem,
                     "pdf": out_dir / f"{stem}.pdf",
-                    "images": {side: cache / f"{run}{sheet['sheet_id']}_{side}{ext[side]}"
+                    "images": {side: temp_dir / f"{run}{sheet['sheet_id']}_{side}{ext[side]}"
                                for side in layout.SIDES},
                     "attribution": {},
                     "futures": [],
@@ -243,9 +293,12 @@ def export_sheets(
                 }
                 try:
                     for side, resolved in (("front", front), ("back", back)):
-                        image, job["attribution"][side] = _render_side(
+                        layers, labels = side_overlays[side]
+                        image, job["attribution"][side], to_store = _render_side(
                             project, resolved, extent, utm, dpi, width_px, height_px,
-                            zone, hemisphere, cell)
+                            zone, hemisphere, cell, layers, labels, use_cache)
+                        if to_store:
+                            job["futures"].append(pool.submit(cache.store, *to_store))
                         job["futures"].append(pool.submit(
                             render.save_image, image, job["images"][side], jpeg_quality,
                             mirror=(side == "back")))
@@ -264,6 +317,12 @@ def export_sheets(
         finally:
             if pending is not None:
                 finish(pending)
+
+    if use_cache:
+        try:
+            cache.prune()
+        except OSError:
+            pass
 
     if two_up_jobs:
         try:

@@ -365,6 +365,10 @@ class KartenwerkPlugin:
         values = dlg.values()
         for key, value in values.items():
             config.set_setting(key, value)
+        overlay_ids, overlays_back = dlg.project_values()
+        if (overlay_ids, overlays_back) != (config.project_overlays(),
+                                            config.project_overlays_on_back()):
+            config.set_project_overlays(overlay_ids, overlays_back)  # marks the project as changed
         if (values["page_format"], int(values["scale"]), int(values["overlap"])) != \
                 (old_format, old_scale, old_overlap):
             layout.ensure_layout(QgsProject.instance())

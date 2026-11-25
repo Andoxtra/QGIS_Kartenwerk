@@ -338,6 +338,7 @@ def generate_grid(
     row_max = math.floor((bbox.yMaximum() - config.GRID_ORIGIN_N) / cell_h)
 
     grid_layer = ensure_grid_layer(project, zone, hemisphere, gpkg_path)
+    previous = _numbers_and_names(grid_layer, cell_w, cell_h)
     field_names = [f.name() for f in grid_layer.fields()]
     features = []
     for row in range(row_min, row_max + 1):
@@ -351,8 +352,10 @@ def generate_grid(
                 continue
             feat = QgsFeature(grid_layer.fields())
             feat.setGeometry(cell)
+            sheet_id = crs_mod.sheet_id(zone, hemisphere, row, col)
+            number, name = previous.get(sheet_id, (None, None))
             values = {
-                "sheet_id": crs_mod.sheet_id(zone, hemisphere, row, col),
+                "sheet_id": sheet_id,
                 "utm_zone": zone,
                 "hemisphere": hemisphere,
                 "row": row,
@@ -363,8 +366,8 @@ def generate_grid(
                 "n_max": n_max,
                 "center_e": (e_min + e_max) / 2.0,
                 "center_n": (n_min + n_max) / 2.0,
-                "sheet_no": None,
-                "sheet_name": None,
+                "sheet_no": number,
+                "sheet_name": name,
                 "in_aoi": 1 if cell.intersects(aoi) else 0,
             }
             feat.setAttributes([values.get(name) for name in field_names])
@@ -383,6 +386,28 @@ def generate_grid(
     if set_project_crs:
         project.setCrs(target_crs)
     return grid_layer, len(features), warning
+
+
+def _numbers_and_names(grid_layer: QgsVectorLayer, cell_w: float, cell_h: float) -> dict:
+    """{sheet_id: (number, name)} of the current grid, kept when the grid is regenerated.
+
+    Only taken over when the cell size is unchanged: after a change of page format,
+    scale or overlap the same sheet id covers different ground.
+    """
+    result = {}
+    for feat in grid_layer.getFeatures():
+        try:
+            same_size = (abs(float(feat["e_max"]) - float(feat["e_min"]) - cell_w) < 0.5
+                         and abs(float(feat["n_max"]) - float(feat["n_min"]) - cell_h) < 0.5)
+        except (TypeError, ValueError):
+            continue
+        number, name = feat["sheet_no"], feat["sheet_name"]
+        if same_size and (number not in (None, "") or name not in (None, "")):
+            result[str(feat["sheet_id"])] = (
+                None if number in (None, "") else int(number),
+                None if name in (None, "") else str(name),
+            )
+    return result
 
 
 def clear_grid(grid_layer: QgsVectorLayer) -> None:
@@ -452,6 +477,29 @@ def set_sheet_name(grid_layer: QgsVectorLayer, fid: int, name: str) -> None:
         raise RuntimeError("The sheet name could not be saved: "
                            + "; ".join(grid_layer.commitErrors()))
     grid_layer.triggerRepaint()
+
+
+def number_missing(grid_layer: QgsVectorLayer) -> int:
+    """Number only the selected sheets that have no number yet.
+
+    New numbers continue after the highest number in the grid (north → south,
+    west → east), so numbers kept from earlier exports stay unchanged.
+    """
+    feats = [f for f in grid_layer.selectedFeatures() if f["sheet_no"] in (None, "")]
+    if not feats:
+        return 0
+    used = [int(f["sheet_no"]) for f in grid_layer.getFeatures() if f["sheet_no"] not in (None, "")]
+    start = max(used, default=0) + 1
+    feats.sort(key=lambda f: (-float(f["n_max"]), float(f["e_min"])))
+    idx = grid_layer.fields().indexFromName("sheet_no")
+    if grid_layer.isEditable():
+        grid_layer.rollBack()
+    grid_layer.startEditing()
+    for offset, feat in enumerate(feats):
+        grid_layer.changeAttributeValue(feat.id(), idx, start + offset)
+    grid_layer.commitChanges()
+    grid_layer.triggerRepaint()
+    return len(feats)
 
 
 def neighbour_map(grid_layer: QgsVectorLayer) -> dict:

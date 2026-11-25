@@ -237,6 +237,12 @@ def _defaults() -> dict:
         "scale": DEFAULT_SCALE,
         "overlap": DEFAULT_OVERLAP,
         "two_up": False,
+        "render_cache": True,
+        # Duplex offset of the back side in mm (see duplex_offset()).
+        "duplex_dx": 0.0,
+        "duplex_dy": 0.0,
+        "duplex_2up_dx": 0.0,
+        "duplex_2up_dy": 0.0,
         # "auto", a catalog key from sources.py, or "layer:<name>"
         "front_basemap": AUTO,
         "back_basemap": AUTO,
@@ -279,6 +285,30 @@ def get_int(key: str) -> int:
 _LEGACY_OUTPUT_DIR = Path.home() / "Documents" / "QGIS_Kartenwerk" / "ausgabe"
 
 
+MAX_DUPLEX_OFFSET_MM = 5.0
+
+
+def duplex_offset(two_up: bool = False) -> tuple[float, float]:
+    """(dx, dy) in mm by which all back-page content is moved, to compensate the printer.
+
+    Convention: the user prints the duplex test page (always without offset), looks
+    at the BACK against a window and reads where the front's cross appears on the
+    back's rulers (+ = right / down as seen on the back). Those two readings are
+    stored as they are and REPLACE any earlier offset; the back content then moves
+    by exactly (dx, dy). Separate values for the landscape sheet PDFs and for the
+    portrait two-per-page file, because drivers rotate the two differently.
+    """
+    prefix = "duplex_2up_" if two_up else "duplex_"
+    values = []
+    for axis in ("dx", "dy"):
+        try:
+            value = float(get_setting(prefix + axis) or 0.0)
+        except (TypeError, ValueError):
+            value = 0.0
+        values.append(max(-MAX_DUPLEX_OFFSET_MM, min(MAX_DUPLEX_OFFSET_MM, value)))
+    return values[0], values[1]
+
+
 def remove_legacy_settings() -> None:
     settings = QgsSettings()
     for key in _LEGACY_KEYS:
@@ -305,6 +335,7 @@ def export_settings() -> dict:
         "dpi": get_int("dpi"),
         "auto_number": get_bool("auto_number"),
         "two_up": get_bool("two_up") and page_format() in TWO_UP_PAPER,
+        "render_cache": get_bool("render_cache"),
         "open_folder": get_bool("open_folder"),
         "front_basemap": str(get_setting("front_basemap") or AUTO),
         "back_basemap": str(get_setting("back_basemap") or AUTO),
@@ -314,6 +345,28 @@ def export_settings() -> dict:
         "front_attribution": str(get_setting("front_attribution") or ""),
         "back_attribution": str(get_setting("back_attribution") or ""),
     }
+
+
+# ---------------------------------------------------------------------------
+# Project-specific settings (stored in the .qgz, not in the QGIS profile)
+# ---------------------------------------------------------------------------
+def project_overlays(project=None) -> list[str]:
+    """Layer ids drawn on top of the front map (e.g. a GPX route)."""
+    project = project or QgsProject.instance()
+    values, ok = project.readListEntry(_SETTINGS_PREFIX, "overlays")
+    return [v for v in values if v] if ok else []
+
+
+def project_overlays_on_back(project=None) -> bool:
+    project = project or QgsProject.instance()
+    value, ok = project.readBoolEntry(_SETTINGS_PREFIX, "overlays_back", False)
+    return bool(value) if ok else False
+
+
+def set_project_overlays(layer_ids: list[str], on_back: bool, project=None) -> None:
+    project = project or QgsProject.instance()
+    project.writeEntry(_SETTINGS_PREFIX, "overlays", list(layer_ids))
+    project.writeEntry(_SETTINGS_PREFIX, "overlays_back", bool(on_back))
 
 
 def format_coord(value: float) -> str:

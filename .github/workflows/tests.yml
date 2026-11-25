@@ -25,7 +25,7 @@ jobs:
       - run: python dev/test_zones.py
 
   layout:
-    name: Layout, scale and safe zone (QGIS)
+    name: Layout, scale, features and UI (QGIS)
     runs-on: ubuntu-latest
     container: qgis/qgis:ltr
     env:
@@ -33,6 +33,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: python3 dev/test_core.py --offline
+      - run: python3 dev/test_ui.py
 
   export:
     name: End-to-end export (downloads tiles)

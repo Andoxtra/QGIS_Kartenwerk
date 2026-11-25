@@ -1,4 +1,4 @@
-"""Settings dialog."""
+"""Settings dialog (tabs: Map, Printing, Advanced)."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -10,32 +10,72 @@ from qgis.PyQt.QtWidgets import (
     QComboBox,
     QDialog,
     QDialogButtonBox,
+    QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QListWidget,
+    QListWidgetItem,
+    QMessageBox,
     QPushButton,
     QSpinBox,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
 
-from . import config, crs as crs_mod, grid, sources
+from . import cache, config, crs as crs_mod, grid, layout, sources
+
+_OWN_LAYERS = (config.AOI_LAYER, config.GRID_LAYER, *config.LEGACY_AOI_LAYERS,
+               *config.LEGACY_GRID_LAYERS)
+
+
+def _note(text: str) -> QLabel:
+    label = QLabel(text)
+    label.setWordWrap(True)
+    label.setStyleSheet("color: palette(mid);")
+    return label
+
+
+def _offset_spin(value: float) -> QDoubleSpinBox:
+    spin = QDoubleSpinBox()
+    spin.setRange(-config.MAX_DUPLEX_OFFSET_MM, config.MAX_DUPLEX_OFFSET_MM)
+    spin.setSingleStep(0.5)
+    spin.setDecimals(1)
+    spin.setSuffix(" mm")
+    spin.setValue(value)
+    return spin
 
 
 class SettingsDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Kartenwerk – Settings")
-        self.setMinimumWidth(560)
+        self.setMinimumWidth(580)
 
-        self.output_edit = QLineEdit(str(config.get_setting("output_dir") or ""))
-        self.output_edit.setPlaceholderText(str(config.default_output_dir()))
-        browse = QPushButton("…")
-        browse.clicked.connect(self._browse)
-        output_row = self._row(self.output_edit, browse)
+        tabs = QTabWidget()
+        tabs.addTab(self._map_tab(), "Map")
+        tabs.addTab(self._printing_tab(), "Printing")
+        tabs.addTab(self._advanced_tab(), "Advanced")
 
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+
+        box = QVBoxLayout(self)
+        box.addWidget(tabs)
+        box.addWidget(buttons)
+
+        self._update_quality_enabled()
+        self._update_auto_note()
+        self._update_two_up()
+
+    # ------------------------------------------------------------------
+    # tabs
+    # ------------------------------------------------------------------
+    def _map_tab(self) -> QWidget:
         self.page_combo = QComboBox()
         for name in ("A2", "A3", "A4", "A5"):
             w, h = config.PAGE_FORMATS[name]
@@ -63,19 +103,49 @@ class SettingsDialog(QDialog):
         )
         self.front_combo.currentIndexChanged.connect(self._update_auto_note)
         self.back_combo.currentIndexChanged.connect(self._update_auto_note)
-
         refresh_button = QPushButton("Refresh")
-        refresh_button.setToolTip("Reload the list after adding a layer to the project")
-        refresh_button.clicked.connect(lambda: self._populate_basemaps())
+        refresh_button.setToolTip("Reload the lists after adding a layer to the project")
+        refresh_button.clicked.connect(self._refresh_layers)
         swap_button = QPushButton("Swap")
         swap_button.setToolTip("Swap front and back basemap, format and attribution")
         swap_button.clicked.connect(self._swap)
-        front_row = self._row(self.front_combo, refresh_button)
-        back_row = self._row(self.back_combo, swap_button)
+        self.auto_note = _note("")
 
-        self.auto_note = QLabel()
-        self.auto_note.setWordWrap(True)
-        self.auto_note.setStyleSheet("color: palette(mid);")
+        self.overlay_list = QListWidget()
+        self.overlay_list.setMaximumHeight(96)
+        self.overlay_list.setToolTip("Your own vector layers (e.g. a GPX route or waypoints), "
+                                     "drawn on top of the map with their QGIS style.")
+        self._populate_overlays(config.project_overlays())
+        self.overlays_back = QCheckBox("Also draw them on the back (without labels, which "
+                                       "would be mirrored)")
+        self.overlays_back.setChecked(config.project_overlays_on_back())
+
+        form = QFormLayout()
+        form.addRow("Page format", self.page_combo)
+        form.addRow("Scale", self.scale_combo)
+        form.addRow("Sheet overlap", self.overlap_combo)
+        form.addRow("", _note(
+            "Page format, scale and overlap set the grid cell size. Regenerate the grid after "
+            "changing them. Coordinates are WGS 84 / UTM; the zone is chosen from the work area."))
+        form.addRow("Front (map)", self._row(self.front_combo, refresh_button))
+        form.addRow("Back (imagery)", self._row(self.back_combo, swap_button))
+        form.addRow("", self.auto_note)
+        form.addRow("Overlays", self.overlay_list)
+        form.addRow("", self.overlays_back)
+        form.addRow("", _note("Overlays are saved in this project. Add a GPX file to QGIS "
+                              "(drag and drop) to make it appear in the list."))
+        return self._page(form)
+
+    def _printing_tab(self) -> QWidget:
+        self.output_edit = QLineEdit(str(config.get_setting("output_dir") or ""))
+        self.output_edit.setPlaceholderText(str(config.default_output_dir()))
+        browse = QPushButton("…")
+        browse.clicked.connect(self._browse)
+
+        self.dpi_spin = QSpinBox()
+        self.dpi_spin.setRange(150, 600)
+        self.dpi_spin.setSingleStep(50)
+        self.dpi_spin.setValue(config.get_int("dpi"))
 
         self.front_format = QComboBox()
         self.back_format = QComboBox()
@@ -92,74 +162,91 @@ class SettingsDialog(QDialog):
         self.jpeg_quality.setSuffix(" %")
         self.jpeg_quality.setValue(config.get_int("jpeg_quality"))
 
-        self.front_attribution = QLineEdit(str(config.get_setting("front_attribution") or ""))
-        self.back_attribution = QLineEdit(str(config.get_setting("back_attribution") or ""))
-        for edit in (self.front_attribution, self.back_attribution):
-            edit.setPlaceholderText("Automatic (from the basemap)")
-
-        self.dpi_spin = QSpinBox()
-        self.dpi_spin.setRange(150, 600)
-        self.dpi_spin.setSingleStep(50)
-        self.dpi_spin.setValue(config.get_int("dpi"))
-
-        self.auto_number = QCheckBox("Number sheets automatically on export")
-        self.auto_number.setChecked(config.get_bool("auto_number"))
         self.two_up = QCheckBox()
         self.two_up.setChecked(config.get_bool("two_up"))
         self.two_up.setToolTip("Extra PDF for home printers: two sheets stacked on the next larger "
                                "paper with cut marks. Print it double-sided, 'flip on long edge'.")
         self.page_combo.currentIndexChanged.connect(self._update_two_up)
 
-        self.open_folder = QCheckBox("Open the output folder after export")
-        self.open_folder.setChecked(config.get_bool("open_folder"))
-
-        note = QLabel(
-            "Page format, scale and overlap set the grid cell size. Regenerate the grid after "
-            "changing them. "
-            "Coordinates are WGS 84 / UTM; the zone is chosen from the work area."
-        )
-        note.setWordWrap(True)
-        note.setStyleSheet("color: palette(mid);")
+        dx, dy = config.duplex_offset(two_up=False)
+        self.offset_dx, self.offset_dy = _offset_spin(dx), _offset_spin(dy)
+        dx2, dy2 = config.duplex_offset(two_up=True)
+        self.offset2_dx, self.offset2_dy = _offset_spin(dx2), _offset_spin(dy2)
+        test_button = QPushButton("Create duplex test pages")
+        test_button.setToolTip("Writes Duplex_test_*.pdf to the output folder")
+        test_button.clicked.connect(self._duplex_test)
 
         form = QFormLayout()
-        form.addRow("Output folder", output_row)
-        form.addRow("Page format", self.page_combo)
-        form.addRow("Scale", self.scale_combo)
-        form.addRow("Sheet overlap", self.overlap_combo)
-        form.addRow("", note)
-        form.addRow("Front (map)", front_row)
-        form.addRow("Back (imagery)", back_row)
-        form.addRow("", self.auto_note)
+        form.addRow("Output folder", self._row(self.output_edit, browse))
+        form.addRow("Resolution (dpi)", self.dpi_spin)
         form.addRow("Front format", self.front_format)
         form.addRow("Back format", self.back_format)
         form.addRow("JPEG quality", self.jpeg_quality)
+        form.addRow("", self.two_up)
+        form.addRow("Duplex offset, sheet PDFs",
+                    self._row(self.offset_dx, self.offset_dy, labels=("right", "down")))
+        form.addRow("Duplex offset, 2-per-page",
+                    self._row(self.offset2_dx, self.offset2_dy, labels=("right", "down")))
+        form.addRow("", test_button)
+        form.addRow("", _note(
+            "Most duplex printers shift the back by 1–2 mm. Print the test pages, hold the sheet "
+            "against a window, look at the back and enter where the front's cross appears on "
+            "its rulers. The test pages are always printed without offset, so the reading "
+            "replaces the old value."))
+        return self._page(form)
+
+    def _advanced_tab(self) -> QWidget:
+        self.front_attribution = QLineEdit(str(config.get_setting("front_attribution") or ""))
+        self.back_attribution = QLineEdit(str(config.get_setting("back_attribution") or ""))
+        for edit in (self.front_attribution, self.back_attribution):
+            edit.setPlaceholderText("Automatic (from the basemap)")
+
+        self.auto_number = QCheckBox("Number unnumbered sheets automatically on export "
+                                     "(existing numbers are kept)")
+        self.auto_number.setChecked(config.get_bool("auto_number"))
+        self.open_folder = QCheckBox("Open the output folder after export")
+        self.open_folder.setChecked(config.get_bool("open_folder"))
+
+        self.render_cache = QCheckBox("Keep downloaded maps for faster re-exports")
+        self.render_cache.setChecked(config.get_bool("render_cache"))
+        self.render_cache.setToolTip(
+            f"Stores rendered map images for {cache.MAX_AGE_DAYS} days (max. "
+            f"{cache.MAX_BYTES // 1024 ** 3} GB), so exporting a sheet again downloads nothing. "
+            "Esri imagery is never stored (its terms do not allow it).")
+        self.cache_label = QLabel()
+        clear_button = QPushButton("Clear cache")
+        clear_button.clicked.connect(self._clear_cache)
+        self._update_cache_label()
+
+        form = QFormLayout()
         form.addRow("Front attribution", self.front_attribution)
         form.addRow("Back attribution", self.back_attribution)
-        form.addRow("Resolution (dpi)", self.dpi_spin)
         form.addRow("", self.auto_number)
-        form.addRow("", self.two_up)
         form.addRow("", self.open_folder)
-
-        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
-
-        box = QVBoxLayout(self)
-        box.addLayout(form)
-        box.addWidget(buttons)
-
-        self._update_quality_enabled()
-        self._update_auto_note()
-        self._update_two_up()
+        form.addRow("", self.render_cache)
+        form.addRow("Cache", self._row(self.cache_label, clear_button))
+        return self._page(form)
 
     # ------------------------------------------------------------------
+    # helpers
+    # ------------------------------------------------------------------
     @staticmethod
-    def _row(main: QWidget, button: QPushButton) -> QWidget:
+    def _page(form: QFormLayout) -> QWidget:
+        page = QWidget()
+        page.setLayout(form)
+        return page
+
+    @staticmethod
+    def _row(*widgets, labels=None) -> QWidget:
         row = QWidget()
-        layout = QHBoxLayout(row)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.addWidget(main, 1)
-        layout.addWidget(button)
+        box = QHBoxLayout(row)
+        box.setContentsMargins(0, 0, 0, 0)
+        for index, widget in enumerate(widgets):
+            if labels:
+                box.addWidget(QLabel(labels[index]))
+            box.addWidget(widget, 1 if index == 0 and not labels else 0)
+        if labels:
+            box.addStretch(1)
         return row
 
     def _browse(self):
@@ -173,6 +260,10 @@ class SettingsDialog(QDialog):
         index = combo.findData(value)
         if index >= 0:
             combo.setCurrentIndex(index)
+
+    def _refresh_layers(self):
+        self._populate_basemaps()
+        self._populate_overlays(self.overlay_ids())
 
     def _populate_basemaps(self, front_value=None, back_value=None):
         front_value = self.front_combo.currentData() if front_value is None else front_value
@@ -209,6 +300,32 @@ class SettingsDialog(QDialog):
         self._select_data(self.back_combo, back_value)
         self._update_auto_note()
 
+    def _populate_overlays(self, checked_ids: list[str]):
+        self.overlay_list.clear()
+        layers = sorted(
+            (layer for layer in QgsProject.instance().mapLayers().values()
+             if layer.type() == QgsMapLayer.VectorLayer and layer.name() not in _OWN_LAYERS),
+            key=lambda layer: layer.name().lower(),
+        )
+        for layer in layers:
+            item = QListWidgetItem(layer.name())
+            item.setData(Qt.UserRole, layer.id())
+            item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
+            item.setCheckState(Qt.Checked if layer.id() in checked_ids else Qt.Unchecked)
+            self.overlay_list.addItem(item)
+        if not layers:
+            item = QListWidgetItem("(no vector layers in this project)")
+            item.setFlags(Qt.NoItemFlags)
+            self.overlay_list.addItem(item)
+
+    def overlay_ids(self) -> list[str]:
+        ids = []
+        for row in range(self.overlay_list.count()):
+            item = self.overlay_list.item(row)
+            if item.checkState() == Qt.Checked and item.data(Qt.UserRole):
+                ids.append(item.data(Qt.UserRole))
+        return ids
+
     def _update_auto_note(self, *args):
         if not hasattr(self, "auto_note"):
             return
@@ -244,12 +361,46 @@ class SettingsDialog(QDialog):
         else:
             self.two_up.setText("Two sheets per page: not available for A2")
         self.two_up.setEnabled(paper is not None)
+        self.offset2_dx.setEnabled(paper is not None)
+        self.offset2_dy.setEnabled(paper is not None)
 
     def _update_quality_enabled(self):
         jpeg = "JPEG" in (self.front_format.currentData(), self.back_format.currentData())
         self.jpeg_quality.setEnabled(jpeg)
 
+    def _update_cache_label(self):
+        try:
+            size = cache.size_bytes() / 1024 ** 2
+            self.cache_label.setText(f"{size:.0f} MB in {len(cache.entries())} map images")
+        except OSError:
+            self.cache_label.setText("not available")
+
+    def _clear_cache(self):
+        cache.clear()
+        self._update_cache_label()
+
+    def _duplex_test(self):
+        # Uses the page format chosen in the dialog, even before OK is pressed.
+        old_format = config.get_setting("page_format")
+        config.set_setting("page_format", self.page_combo.currentData())
+        try:
+            output = self.output_edit.text().strip()
+            out_dir = Path(output).expanduser() if output else config.default_output_dir()
+            out_dir.mkdir(parents=True, exist_ok=True)
+            files = layout.export_duplex_test(QgsProject.instance(), out_dir)
+        except Exception as exc:
+            QMessageBox.warning(self, "Kartenwerk – Duplex test", str(exc))
+            return
+        finally:
+            config.set_setting("page_format", old_format)
+        QMessageBox.information(
+            self, "Kartenwerk – Duplex test",
+            "Written:\n" + "\n".join(str(f) for f in files)
+            + "\n\nPrint double-sided at actual size, then follow the instructions on the back.")
+
+    # ------------------------------------------------------------------
     def values(self) -> dict:
+        """Settings stored in the QGIS profile (see project_values for per-project ones)."""
         output = self.output_edit.text().strip()
         return {
             "output_dir": str(Path(output).expanduser()) if output else "",
@@ -266,5 +417,14 @@ class SettingsDialog(QDialog):
             "dpi": self.dpi_spin.value(),
             "auto_number": self.auto_number.isChecked(),
             "two_up": self.two_up.isChecked(),
+            "render_cache": self.render_cache.isChecked(),
+            "duplex_dx": self.offset_dx.value(),
+            "duplex_dy": self.offset_dy.value(),
+            "duplex_2up_dx": self.offset2_dx.value(),
+            "duplex_2up_dy": self.offset2_dy.value(),
             "open_folder": self.open_folder.isChecked(),
         }
+
+    def project_values(self) -> tuple[list[str], bool]:
+        """(overlay layer ids, overlays on back) — saved in the project."""
+        return self.overlay_ids(), self.overlays_back.isChecked()

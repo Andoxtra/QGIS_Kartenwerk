@@ -1,12 +1,19 @@
 # Kartenwerk – printable duplex map series, anywhere in the world
 
+![Example sheet: topographic front and mirrored aerial back](examples/example_preview.jpg)
+
+*Example sheet (A5, 1:15 000, Black Forest): front and mirrored back.
+[PDF](examples/Sheet_05_32N-R3034C0167.pdf) · map data © BKG (CC BY 4.0) and
+© LGL BW (dl-de/by-2-0).*
+
 A QGIS plugin that turns a work area into landscape map sheets (A2, A3, A4 or
 A5) at a selectable scale (default 1:15 000), ready for double-sided printing:
 
 - **Front:** a topographic map with a 1 km UTM grid, numbered in the border.
   The border also carries the sheet number, a scale bar, grid/true/magnetic
-  north, the UTM zone, neighbour sheets, a locator diagram, attribution and
-  print date; the map itself stays free of text.
+  north, the UTM zone and MGRS square, neighbour sheets, a locator diagram,
+  attribution and print date; the map itself stays free of text. Your own
+  layers, such as a GPX route, can be drawn on top.
 - **Back:** the same extent as aerial imagery, **mirrored horizontally**, so the
   back can be printed duplex and held up against the light in register with
   the front.
@@ -84,13 +91,22 @@ The plugin uses only PyQGIS; no additional Python packages are needed.
 
 ## Installation
 
-**From ZIP (any platform):**
+**From a GitHub release (easiest):** download `kartenwerk.zip` from the
+repository's [Releases](https://github.com/Andoxtra/QGIS_Kartenwerk/releases)
+page, then in QGIS: **Plugins → Manage and Install Plugins → Install from
+ZIP**.
+
+**Build the ZIP yourself (any platform):**
 
 ```bash
 python3 install_plugin.py --zip        # writes kartenwerk.zip
 ```
 
-In QGIS: **Plugins → Manage and Install Plugins → Install from ZIP**.
+**Publishing a release** (maintainers): set `version=` in
+`plugin/kartenwerk/metadata.txt`, commit, then push a matching tag, e.g.
+`git tag v2.2.0 && git push origin v2.2.0`. The `release` workflow checks that
+tag and version match, runs the offline tests, builds `kartenwerk.zip` and
+publishes it as a GitHub release.
 
 **From the QGIS plugin repository:** not published yet. The plugin folder
 contains metadata, icon and LICENSE; before uploading, fill in `email=` in
@@ -129,8 +145,9 @@ the plugin appears under **Plugins → Kartenwerk** and as a toolbar and dock.
 4. **Select sheets** – click cells; use `Ctrl` / `Shift` for several.
 5. Optional: **Number sheets** – numbers the selected sheets north → south,
    west → east. **Name sheet** – gives one selected sheet a name (e.g. a
-   village), shown in the title, the overview and `index.csv`. Names and
-   numbers belong to the grid: regenerating the grid removes them.
+   village), shown in the title, the overview and `index.csv`. Regenerating
+   the grid keeps numbers and names as long as page format, scale and overlap
+   are unchanged; automatic numbering on export only fills gaps.
 6. **Export selection** – writes the PDFs to the output folder.
 7. Print – see [Printing](#printing).
 
@@ -141,23 +158,39 @@ count.
 
 ## Settings
 
+**Map tab**
+
 | Setting | Default | Description |
 |---|---|---|
-| Output folder | `<project folder>/output` | Leave empty to follow the project. |
 | Page format | `A5` | `A2`, `A3`, `A4` or `A5` landscape. Regenerate the grid after changing it. |
 | Scale | `1:15 000` | `1:10 000` – `1:25 000`. A smaller denominator gives larger, more readable text but less area per sheet. |
 | Sheet overlap | `5 %` | None, 5 % or 10 %. Neighbouring sheets share this strip; a dashed line marks where the next sheet begins. Regenerate the grid after changing it. |
 | Front (map) / Back (imagery) | Automatic | Automatic, a catalog source, or a raster layer from the project. The dialog shows what Automatic picks for the current work area. |
+| Overlays | none | Your own vector layers (e.g. a GPX route, waypoints), drawn on top of the map with their QGIS style. Optionally also on the back, without labels (they would be mirrored). Saved in the project. |
+
+**Printing tab**
+
+| Setting | Default | Description |
+|---|---|---|
+| Output folder | `<project folder>/output` | Leave empty to follow the project. |
+| Resolution (dpi) | `300` | Render and PDF resolution. |
 | Front/Back format | `PNG` | `PNG` (lossless) or `JPEG` (faster, smaller). |
 | JPEG quality | `92` | 50–100. |
-| Front/Back attribution | automatic | Leave empty to print the source's own attribution. |
-| Resolution (dpi) | `300` | Render and PDF resolution. |
-| Number sheets automatically | on | Numbers unnumbered selected sheets on export. |
 | Two sheets per page | off | Also writes a print file with two sheets stacked on the next larger paper (A5 → A4, A4 → A3, A3 → A2) with cut marks. Not available for A2. |
-| Open output folder | on | Opens the folder after a successful export. |
+| Duplex offset | 0 / 0 mm | Moves all back-side content to compensate a printer's duplex shift; separate values for the sheet PDFs and the two-per-page file. See [Printing](#printing). |
 
-**Refresh** reloads the layer list; **Swap** swaps front/back basemap, format
-and attribution. Settings are stored under `kartenwerk/*` in the QGIS settings.
+**Advanced tab**
+
+| Setting | Default | Description |
+|---|---|---|
+| Front/Back attribution | automatic | Leave empty to print the source's own attribution. |
+| Number sheets automatically | on | Numbers unnumbered selected sheets on export; existing numbers are kept. |
+| Open output folder | on | Opens the folder after a successful export. |
+| Keep downloaded maps | on | Render cache: rendered map images are kept for 30 days (max. 1 GB), so exporting a sheet again downloads nothing. Esri imagery is never stored, as its terms don't allow it. **Clear cache** shows the size and empties it. |
+
+**Refresh** reloads the layer lists; **Swap** swaps front/back basemap, format
+and attribution. Settings are stored under `kartenwerk/*` in the QGIS
+settings, overlays in the project.
 
 ---
 
@@ -233,14 +266,21 @@ overlap. Example for A5 at 1:15 000 with 5 % overlap:
    - the two-per-page print file (portrait pages): usually **"flip on long
      edge"**.
 
-   Print one sheet first and hold it against a window: the grid lines on the
-   front and back should coincide. A shift of 1–2 mm is normal for duplex
-   printers; a mirrored or upside-down back means the other flip setting.
-4. **Paper.** A5 sheets need A5 paper in the printer, or switch on **Two
+   A mirrored or upside-down back means the other flip setting.
+4. **Duplex offset.** Most duplex printers shift the back by 1–2 mm. Settings →
+   Printing → **Create duplex test pages** writes `Duplex_test_A5.pdf` (and
+   `Duplex_test_2-per-page_A4.pdf`). Print it double-sided like the maps, hold
+   it against a window and look at the **back**: read where the front's cross
+   shows through on the back's millimetre rulers (+ = right, + = down) and
+   enter both values as the duplex offset. The test pages are always printed
+   without offset, so a new reading simply replaces the old value. The two
+   files need separate values because printer drivers rotate landscape and
+   portrait pages differently.
+5. **Paper.** A5 sheets need A5 paper in the printer, or switch on **Two
    sheets per page** and print the `Print_2-per-page_A4.pdf` file on A4, then
    cut along the cut marks at the middle of the page. For field use, 100–120
    g/m² paper (or waterproof paper) holds up better than standard 80 g/m².
-5. **Large series.** Print a test sheet before printing everything; most
+6. **Large series.** Print a test sheet before printing everything; most
    problems (scale, duplex, cut-off text) show on the first page.
 
 ---
@@ -259,8 +299,10 @@ The border, from top to bottom:
   neighbour shows its number (`▲ 04`), an unselected one its short ID in grey,
   a missing one `—`.
 - **Bottom:** scale bar (stays correct even if the page is printed scaled) and
-  scale; south neighbour; UTM zone and SW corner of the printed map; a locator
-  diagram showing the sheet within the series; attribution and print date.
+  scale; south neighbour; UTM zone and MGRS 100 km square (e.g. `32U MU`, or
+  `32U MU / NU` when a sheet spans two squares — left out in the Norway and
+  Svalbard MGRS exception zones); a locator diagram showing the sheet within
+  the series; attribution, print date and the SW corner of the printed map.
 - A thin frame line surrounds the map; with overlap, dashed lines inside the
   map mark where the neighbouring sheets begin.
 
@@ -285,8 +327,9 @@ QGIS_Kartenwerk/
 │   ├── plugin.py               # toolbar, dock, actions
 │   ├── dialog.py               # settings dialog
 │   ├── config.py               # geometry, paths, settings
-│   ├── crs.py                  # UTM zone selection, grid convergence
+│   ├── crs.py                  # UTM zone selection, grid convergence, MGRS squares
 │   ├── wmm.py, WMM2025.COF     # World Magnetic Model (magnetic declination)
+│   ├── cache.py                # render cache (never used for Esri imagery)
 │   ├── icon.png, LICENSE       # plugin icon, Unlicense (code is public domain)
 │   ├── NOTICE.md               # what is public domain and what is not (map data)
 │   ├── sources.py              # basemap catalog + automatic selection
@@ -317,7 +360,8 @@ QGIS_Kartenwerk/
 
 ## Tests
 
-Offline (no QGIS needed):
+Offline (no QGIS needed): UTM zones, source selection, MGRS letters (against
+documented reference values) and the magnetic model (all 100 NOAA test values):
 
 ```bash
 python3 dev/test_zones.py
@@ -329,7 +373,9 @@ End-to-end export for several regions (needs PyQGIS and internet; writes to
 ```bash
 QT_QPA_PLATFORM=offscreen python3 dev/test_core.py            # bw nl us jp nz fallback lu bz westland
 QT_QPA_PLATFORM=offscreen python3 dev/test_core.py bw nl      # selected regions
-QT_QPA_PLATFORM=offscreen python3 dev/test_core.py --offline  # layout/scale checks only, no downloads
+QT_QPA_PLATFORM=offscreen python3 dev/test_core.py --offline  # no downloads: layout, scale, safe zone,
+                                                              # duplex offset, cache, overlays, numbering
+QT_QPA_PLATFORM=offscreen python3 dev/test_ui.py              # dock, actions and settings dialog
 ```
 
 Without a local QGIS, use the official Docker image:
@@ -339,8 +385,8 @@ docker run --rm -u $(id -u):$(id -g) -e HOME=/tmp -v "$PWD":/work -w /work \
   qgis/qgis:ltr python3 dev/test_core.py
 ```
 
-**GitHub Actions** (`.github/workflows/tests.yml`) runs `test_zones.py` and
-`test_core.py --offline` on every push and pull request. The end-to-end export
+**GitHub Actions** (`.github/workflows/tests.yml`) runs `test_zones.py`,
+`test_core.py --offline` and `test_ui.py` on every push and pull request. The end-to-end export
 downloads real map tiles, so it only runs on demand: Actions → tests → Run
 workflow → tick "Also run the end-to-end export test". Its PDFs are attached to
 the run.

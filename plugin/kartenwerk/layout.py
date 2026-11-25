@@ -36,7 +36,7 @@ from qgis.core import (
 from . import config, crs as crs_mod
 
 LAYOUT_NAME = "Kartenwerk"
-LAYOUT_VERSION = "4"  # bump when the border design changes, so saved layouts are rebuilt
+LAYOUT_VERSION = "5"  # bump when the border design changes, so saved layouts are rebuilt
 LEGACY_LAYOUTS = ("Vorderseite", "Rueckseite")
 SIDES = ("front", "back")  # page 0, page 1
 _MM = QgsUnitTypes.LayoutMillimeters
@@ -65,17 +65,39 @@ def u(value: float) -> float:
 
 
 class Slot:
-    """Where one side of one sheet goes: page index, vertical offset and item-id prefix."""
+    """Where one side of one sheet goes.
 
-    def __init__(self, side: str, page: int, y0: float = 0.0, prefix: str | None = None):
+    page: page index; y0: vertical offset on that page (two sheets per page);
+    dx, dy: duplex offset applied to all of this side's items (back only);
+    prefix: item-id prefix.
+    """
+
+    def __init__(self, side: str, page: int, y0: float = 0.0, prefix: str | None = None,
+                 dx: float = 0.0, dy: float = 0.0):
         self.side = side
         self.page = page
         self.y0 = y0
         self.prefix = prefix if prefix is not None else f"{side}_"
+        self.dx = dx
+        self.dy = dy
 
 
-def default_slot(side: str) -> Slot:
+def default_slot(side: str, offset: tuple[float, float] | None = None) -> Slot:
+    if side == "back":
+        dx, dy = offset if offset is not None else config.duplex_offset(two_up=False)
+        return Slot(side, SIDES.index(side), dx=dx, dy=dy)
     return Slot(side, SIDES.index(side))
+
+
+def _shift(layout: QgsPrintLayout, prefix: str, dx: float, dy: float) -> None:
+    """Move every item whose id starts with ``prefix`` by (dx, dy) mm (duplex offset)."""
+    if not dx and not dy:
+        return
+    for item in list(layout.items()):
+        item_id = getattr(item, "id", None)
+        if callable(item_id) and item.id().startswith(prefix):
+            pos = item.positionWithUnits()
+            item.attemptMove(QgsLayoutPoint(pos.x() + dx, pos.y() + dy, pos.units()))
 
 
 # ---------------------------------------------------------------------------
@@ -221,10 +243,13 @@ def _add_side(layout: QgsPrintLayout, slot: Slot, geom: config.PageGeometry) -> 
     _label(layout, p + "neighbor_bottom", "", geom.page_w / 2 - u(20), bottom + u(2.6), u(40),
            u(3.8), page=page)
     coord_right = geom.right - u(_LOCATOR_MAX_W) - u(2.0)
-    _label(layout, p + "coord", "", coord_right - u(70), bottom + u(2.8), u(70), u(2.8),
+    # Row B right: UTM zone + MGRS square; row C: attribution left, SW corner right.
+    _label(layout, p + "coord", "", coord_right - u(40), bottom + u(2.8), u(40), u(2.8),
+           page=page, align=Qt.AlignRight)
+    _label(layout, p + "corner", "", coord_right - u(50), bottom + u(6.6), u(50), u(2.3),
            page=page, align=Qt.AlignRight)
     _label(layout, p + "source", "", geom.map_x, bottom + u(6.6),
-           coord_right - geom.map_x, u(2.3), page=page, align=Qt.AlignLeft)
+           coord_right - u(52) - geom.map_x, u(2.3), page=page, align=Qt.AlignLeft)
 
     locator = QgsLayoutItemPicture(layout)
     locator.setId(p + "locator")
@@ -233,6 +258,7 @@ def _add_side(layout: QgsPrintLayout, slot: Slot, geom: config.PageGeometry) -> 
     locator.attemptResize(QgsLayoutSize(u(_LOCATOR_H), u(_LOCATOR_H), _MM))
     locator.attemptMove(QgsLayoutPoint(geom.right - u(_LOCATOR_H), bottom + u(2.4), _MM),
                         True, False, page)
+    _shift(layout, p, slot.dx, slot.dy)
 
 
 def _create_layout(project: QgsProject) -> QgsPrintLayout:
@@ -256,14 +282,15 @@ def _create_layout(project: QgsProject) -> QgsPrintLayout:
 
 
 def _signature() -> str:
-    return f"{LAYOUT_VERSION}|{config.page_geometry().signature()}"
+    dx, dy = config.duplex_offset(two_up=False)
+    return f"{LAYOUT_VERSION}|{config.page_geometry().signature()}|{dx:.2f}|{dy:.2f}"
 
 
 def _is_current(layout: QgsPrintLayout) -> bool:
     return (
         layout.customProperty(_PROP) == _signature()
         and layout.pageCollection().pageCount() == 2
-        and all(layout.itemById(f"{side}_locator") is not None for side in SIDES)
+        and all(layout.itemById(f"{side}_corner") is not None for side in SIDES)
     )
 
 
@@ -285,7 +312,9 @@ def ensure_layout(project: QgsProject, force: bool = False) -> QgsPrintLayout:
 # ---------------------------------------------------------------------------
 # "two sheets per page" print file
 # ---------------------------------------------------------------------------
-def two_up_layout(project: QgsProject, count: int) -> tuple[QgsPrintLayout, list[tuple[Slot, Slot]]]:
+def two_up_layout(project: QgsProject, count: int,
+                  offset: tuple[float, float] | None = None,
+                  ) -> tuple[QgsPrintLayout, list[tuple[Slot, Slot]]]:
     """Layout with two sheets stacked on the next larger paper (portrait).
 
     Page 2k holds the fronts of sheets 2k and 2k+1 (top, bottom), page 2k+1 their
@@ -311,11 +340,12 @@ def two_up_layout(project: QgsProject, count: int) -> tuple[QgsPrintLayout, list
 
     half = paper_h / 2.0
     offsets = ((half - geom.page_h) / 2.0, half + (half - geom.page_h) / 2.0)
+    dx, dy = config.duplex_offset(two_up=True) if offset is None else offset
     slots = []
     for i in range(count):
         pair, pos = divmod(i, 2)
         front = Slot("front", 2 * pair, offsets[pos], f"s{i}f_")
-        back = Slot("back", 2 * pair + 1, offsets[pos], f"s{i}b_")
+        back = Slot("back", 2 * pair + 1, offsets[pos], f"s{i}b_", dx=dx, dy=dy)
         _add_side(layout, front, geom)
         _add_side(layout, back, geom)
         slots.append((front, back))
@@ -389,12 +419,18 @@ def _north_html(side: str, info: dict) -> str:
     return small + arrow
 
 
-def _coord_html(sheet: dict, extent) -> str:
-    f = config.format_coord
+def _coord_html(sheet: dict, info: dict) -> str:
     zone = crs_mod.zone_label(int(sheet["utm_zone"]), str(sheet["hemisphere"]))
-    return (_span(f"UTM {zone}", 6.5, bold=True)
-            + _span(f" · SW corner E {f(extent.xMinimum())} · N {f(extent.yMinimum())}", 6,
-                    color=GREY))
+    html_ = _span(f"UTM {zone}", 6.5, bold=True)
+    if info.get("mgrs"):
+        html_ += _span(" · MGRS ", 6, color=GREY) + _span(html.escape(info["mgrs"]), 6.5, bold=True)
+    return html_
+
+
+def _corner_html(extent) -> str:
+    f = config.format_coord
+    return _span(f"SW corner E {f(extent.xMinimum())} · N {f(extent.yMinimum())}", 5.5,
+                 color=GREY)
 
 
 def _source_html(text: str, date: str) -> str:
@@ -531,7 +567,8 @@ def update_side(
 
     layout.itemById(p + "title").setText(_title_html(sheet, side))
     layout.itemById(p + "north").setText(_north_html(side, info))
-    layout.itemById(p + "coord").setText(_coord_html(sheet, extent))
+    layout.itemById(p + "coord").setText(_coord_html(sheet, info))
+    layout.itemById(p + "corner").setText(_corner_html(extent))
     layout.itemById(p + "source").setText(_source_html(source_text, info["date"]))
     layout.itemById(p + "neighbor_top").setText(_neighbour_html(neighbour.get("north"), "▲"))
     layout.itemById(p + "neighbor_bottom").setText(_neighbour_html(neighbour.get("south"), "▼"))
@@ -543,6 +580,7 @@ def update_side(
     layout.itemById(p + "neighbor_right").setText(_neighbour_html(right, "▼"))
 
     _add_km_labels(layout, slot, extent, geom)
+    _shift(layout, f"{p}km_", slot.dx, slot.dy)
 
     # Locator diagram, right-aligned in its reserved box.
     aspect = geom.cell_w / geom.cell_h
@@ -562,7 +600,100 @@ def update_side(
     locator.attemptMove(
         QgsLayoutPoint(geom.right - w, slot.y0 + geom.bottom + u(2.4) + (u(_LOCATOR_H) - h) / 2,
                        _MM), True, False, slot.page)
+    _shift(layout, p + "locator", slot.dx, slot.dy)
     return [path]
+
+
+# ---------------------------------------------------------------------------
+# duplex test pages
+# ---------------------------------------------------------------------------
+def _calibration_pages(layout: QgsPrintLayout, w: float, h: float, page0: int, title: str) -> None:
+    """Front: a cross at the paper centre and a 100 mm scale check. Back: mm rulers."""
+    cx, cy = w / 2.0, h / 2.0
+    safe = config.SAFE_MM + 2.0
+    front, back = page0, page0 + 1
+    # ---- front
+    _label(layout, f"cal{front}_title", _span(f"Duplex test – FRONT · {title}", 11, bold=True),
+           safe, safe, w - 2 * safe, 6.0, page=front, align=Qt.AlignLeft)
+    _label(layout, f"cal{front}_text", _span(
+        "1. Print this file double-sided at actual size (100 %), with the same duplex setting "
+        "you use for the maps. 2. The bar below must measure exactly 100 mm. "
+        "3. Turn the page over and follow the instructions on the back.", 7),
+        safe, safe + 7.0, w - 2 * safe, 12.0, page=front, align=Qt.AlignLeft, valign=Qt.AlignTop)
+    _rect(layout, f"cal{front}_h", cx - 15.0, cy - 0.15, 30.0, 0.3, front, "black", stroke=0)
+    _rect(layout, f"cal{front}_v", cx - 0.15, cy - 15.0, 0.3, 30.0, front, "black", stroke=0)
+    bar_y = min(h - safe - 8.0, cy + 25.0)
+    _rect(layout, f"cal{front}_bar", cx - 50.0, bar_y, 100.0, 1.2, front, "black", stroke=0)
+    _label(layout, f"cal{front}_barlbl", _span("100 mm", 7), cx - 20.0, bar_y + 1.6, 40.0, 3.0,
+           page=front)
+    # ---- back: two rulers next to the centre, read from this side. The front's
+    # cross has 15 mm arms, which reach both rulers when seen through the paper.
+    _label(layout, f"cal{back}_title", _span(
+        "Duplex test – BACK · look at THIS side, held against a window", 11, bold=True),
+        safe, safe, w - 2 * safe, 6.0, page=back, align=Qt.AlignLeft)
+    _label(layout, f"cal{back}_text", _span(
+        "The cross from the front shows through. Read where its vertical line meets the "
+        "LOWER ruler (+ = right) and where its horizontal line meets the RIGHT ruler "
+        "(+ = down), in mm. Enter both values in Settings → Printing → Duplex offset. "
+        "The values replace the old ones (this test page is always printed without offset). "
+        "Both on 0: no correction needed.", 7),
+        safe, safe + 7.0, w - 2 * safe, 16.0, page=back, align=Qt.AlignLeft, valign=Qt.AlignTop)
+    ruler_y = cy + 8.0  # horizontal ruler (reads dx), ticks pointing down
+    ruler_x = cx + 8.0  # vertical ruler (reads dy), ticks pointing right
+    _rect(layout, f"cal{back}_hbase", cx - 5.5, ruler_y - 0.06, 11.0, 0.12, back, "black", stroke=0)
+    _rect(layout, f"cal{back}_vbase", ruler_x - 0.06, cy - 5.5, 0.12, 11.0, back, "black", stroke=0)
+    for i in range(-10, 11):  # 0.5 mm ticks from -5 to +5 mm
+        mm = i / 2.0
+        length = 3.0 if i % 10 == 0 else 2.0 if i % 2 == 0 else 1.0
+        _rect(layout, f"cal{back}_tx{i}", cx + mm - 0.05, ruler_y, 0.1, length, back,
+              "black", stroke=0)
+        _rect(layout, f"cal{back}_ty{i}", ruler_x, cy + mm - 0.05, length, 0.1, back,
+              "black", stroke=0)
+        if i % 4 == 0:  # labels every 2 mm; on the lower ruler in two staggered rows
+            text = "0" if i == 0 else f"{mm:+g}"
+            row = 0.0 if i % 8 == 0 else 2.4
+            _label(layout, f"cal{back}_lx{i}", _span(text, 5), cx + mm - 2.0, ruler_y + 3.3 + row,
+                   4.0, 2.2, page=back)
+            _label(layout, f"cal{back}_ly{i}", _span(text, 5), ruler_x + 3.4, cy + mm - 1.1, 4.0,
+                   2.2, page=back, align=Qt.AlignLeft)
+    _label(layout, f"cal{back}_arrx", _span("+ → (right)", 6, bold=True), cx + 6.5, ruler_y + 0.2,
+           16.0, 2.6, page=back, align=Qt.AlignLeft)
+    _label(layout, f"cal{back}_arry", _span("+ ↓ (down)", 6, bold=True), ruler_x + 8.5,
+           cy + 1.6, 16.0, 2.6, page=back, align=Qt.AlignLeft)
+    _label(layout, f"cal{back}_nameh", _span("reads RIGHT/LEFT", 5, color=GREY), cx - 15.0,
+           ruler_y + 8.6, 30.0, 2.2, page=back)
+    _label(layout, f"cal{back}_namev", _span("reads DOWN/UP", 5, color=GREY), ruler_x + 8.5,
+           cy - 1.1, 20.0, 2.2, page=back, align=Qt.AlignLeft)
+
+
+def export_duplex_test(project: QgsProject, out_dir: Path) -> list[Path]:
+    """Duplex test PDFs for the current page format (and its two-per-page paper).
+
+    Always printed WITHOUT duplex offset: the reading replaces the stored offset.
+    """
+    global _K
+    geom = config.page_geometry()
+    _K = 1.0
+    out_dir = Path(out_dir)
+    jobs = [(geom.name, geom.page_w, geom.page_h, f"Duplex_test_{geom.name}.pdf",
+             f"{geom.name} landscape, for the sheet PDFs")]
+    paper = config.TWO_UP_PAPER.get(geom.name)
+    if paper:
+        paper_h, paper_w = config.PAGE_FORMATS[paper]
+        jobs.append((paper, paper_w, paper_h, f"Duplex_test_2-per-page_{paper}.pdf",
+                     f"{paper} portrait, for the two-per-page print file"))
+    written = []
+    for _, w, h, filename, title in jobs:
+        layout = QgsPrintLayout(project)
+        layout.initializeDefaults()
+        pages = layout.pageCollection()
+        pages.page(0).setPageSize(QgsLayoutSize(w, h, _MM))
+        back = QgsLayoutItemPage(layout)
+        back.setPageSize(QgsLayoutSize(w, h, _MM))
+        pages.addPage(back)
+        _calibration_pages(layout, w, h, 0, title)
+        written.append(export_pdf(layout, out_dir / filename, 300))
+    return written
 
 
 def today() -> str:

@@ -29,7 +29,7 @@ from qgis.core import (  # noqa: E402
 app = QgsApplication([], False)
 app.initQgis()
 
-from kartenwerk import config, crs, exporter, grid, layout, sources  # noqa: E402
+from kartenwerk import cache, config, crs, exporter, grid, layout, sources  # noqa: E402
 
 OUT = HERE / "out"
 failures = []
@@ -187,6 +187,132 @@ def layout_checks(fmt, scale_denom):
           round(measured, 2))
 
 
+def feature_checks(work: Path):
+    """Offline checks for sheet numbers on regenerate, overlays, render cache, duplex offset."""
+    import os
+    import time
+    from qgis.PyQt.QtGui import QColor, QImage
+    from qgis.core import QgsVectorLayer
+    from kartenwerk import cache, render
+    print("== features (offline)", flush=True)
+    config.set_setting("page_format", "A5")
+    config.set_setting("scale", 15000)
+    config.set_setting("overlap", 5)
+    project = QgsProject.instance()
+    project.clear()
+    gpkg = work / "features.gpkg"
+    gpkg.unlink(missing_ok=True)
+    aoi = grid.ensure_aoi_layer(project, gpkg)
+    set_aoi(aoi, (8.20, 48.00, 8.26, 48.04))
+
+    # --- #4 numbers and names survive regeneration ----------------------------
+    g, _, _ = grid.generate_grid(project, aoi, gpkg_path=gpkg)
+    ids = sorted(g.allFeatureIds())
+    g.selectByIds(ids[:3])
+    grid.number_selected(g)
+    named = ids[1]
+    grid.set_sheet_name(g, named, "Testname")
+    before = {f["sheet_id"]: (f["sheet_no"], f["sheet_name"]) for f in g.getFeatures()
+              if f["sheet_no"] not in (None, "")}
+    g, _, _ = grid.generate_grid(project, aoi, gpkg_path=gpkg)
+    after = {f["sheet_id"]: (f["sheet_no"], f["sheet_name"]) for f in g.getFeatures()
+             if f["sheet_no"] not in (None, "")}
+    check("regenerate keeps numbers and names", before == after and len(after) == 3, after)
+    g.selectByIds(sorted(g.allFeatureIds())[:5])
+    added = grid.number_missing(g)
+    numbers = sorted(int(f["sheet_no"]) for f in g.getFeatures() if f["sheet_no"] not in (None, ""))
+    check("auto-numbering only fills gaps (keeps 1–3, adds 4–5)",
+          added == 2 and numbers == [1, 2, 3, 4, 5], numbers)
+    config.set_setting("scale", 20000)
+    g, _, _ = grid.generate_grid(project, aoi, gpkg_path=gpkg)
+    kept = [f["sheet_no"] for f in g.getFeatures() if f["sheet_no"] not in (None, "")]
+    check("different cell size → numbers not carried over", kept == [], kept)
+    config.set_setting("scale", 15000)
+
+    # --- #6 overlays are drawn but never count as basemap data ----------------
+    geom = config.page_geometry()
+    utm = crs.utm_crs(32, "N")
+    extent = QgsRectangle(440_000, 5_320_000, 440_000 + geom.cell_w, 5_320_000 + geom.cell_h)
+    route = QgsVectorLayer("LineString?crs=EPSG:32632", "route", "memory")
+    feat = QgsFeature()
+    feat.setGeometry(QgsGeometry.fromWkt(
+        f"LINESTRING({extent.xMinimum()} {extent.center().y()}, {extent.xMaximum()} {extent.center().y()})"))
+    route.dataProvider().addFeatures([feat])
+    route.renderer().symbol().setColor(QColor(255, 0, 0))
+    route.renderer().symbol().setWidth(1.5)
+    image, missing = render.render_image(extent, [], utm, 100, overlays=[route])
+    y = image.height() // 2
+    red = image.pixelColor(image.width() // 3, y)
+    check("overlay drawn on the map", red.red() > 200 and red.green() < 80, red.name())
+    check("overlay not counted as basemap data", missing == 1.0, missing)
+
+    # --- #10 render cache ---------------------------------------------------
+    cache.set_cache_root(work / "render_cache_unit")
+    cache.clear()
+    k1 = cache.key("opentopomap", "uri", "EPSG:32632", extent, 100, 80, 300)
+    check("cache key changes with dpi", k1 != cache.key("opentopomap", "uri", "EPSG:32632",
+                                                         extent, 100, 80, 150))
+    img = QImage(100, 80, QImage.Format_ARGB32)
+    img.fill(QColor(10, 120, 30))
+    cache.store(k1, img)
+    loaded = cache.load(k1)
+    check("cache store/load round trip", loaded is not None and
+          loaded.pixelColor(5, 5).green() == 120)
+    old = time.time() - (cache.MAX_AGE_DAYS + 1) * 86400
+    os.utime(cache.root() / f"{k1}.png", (old, old))
+    check("expired cache entry is dropped", cache.load(k1) is None)
+    for i in range(3):
+        cache.store(cache.key("opentopomap", f"u{i}", "EPSG:32632", extent, 100, 80, 300), img)
+        time.sleep(0.01)
+    single = cache.entries()[0].stat().st_size
+    cache.prune(max_bytes=int(single * 2.5))
+    check("cache pruned to size limit (oldest removed)", len(cache.entries()) == 2,
+          len(cache.entries()))
+    cache.clear()
+    check("cache cleared", cache.entries() == [])
+    cache.set_cache_root(work / "render_cache")
+    check("Esri imagery is not cacheable", sources.get("esri_imagery").cacheable is False)
+
+    # --- #5 duplex offset moves every back item, nothing on the front --------
+    def item_rects(lay):
+        return {it.id(): it.sceneBoundingRect() for it in lay.items()
+                if hasattr(it, "id") and callable(it.id) and it.id()}
+
+    sheet = {"sheet_id": "32N-R1234C0567", "utm_zone": 32, "hemisphere": "N", "sheet_no": 7,
+             "sheet_name": None, "row": 1234, "col": 567}
+    info = {"extent": extent, "sheets": [sheet], "convergence": 0.5, "grid_magnetic": 2.0,
+            "year": 2026, "date": "2026-11-25", "mgrs": "32U MU"}
+    img_path = config.cache_dir() / "features_grid.png"
+    render.save_image(QImage(10, 10, QImage.Format_RGB32), img_path)
+    rects = {}
+    for dx, dy in ((0.0, 0.0), (2.0, -1.5)):
+        config.set_setting("duplex_dx", dx)
+        config.set_setting("duplex_dy", dy)
+        lay = layout.ensure_layout(project, force=True)
+        for side in layout.SIDES:
+            layout.update_side(lay, side, sheet, img_path, {}, "© Test", info)
+        rects[(dx, dy)] = item_rects(lay)
+        if (dx, dy) == (0.0, 0.0):
+            coord = lay.itemById("front_coord").text()
+            check("MGRS square in the border", "32U MU" in coord, coord[:80])
+    base, moved = rects[(0.0, 0.0)], rects[(2.0, -1.5)]
+    back_ok = all(abs(moved[i].x() - base[i].x() - 2.0) < 0.01 and
+                  abs(moved[i].y() - base[i].y() + 1.5) < 0.01
+                  for i in base if i.startswith("back_"))
+    front_ok = all(abs(moved[i].x() - base[i].x()) < 0.01 and abs(moved[i].y() - base[i].y()) < 0.01
+                   for i in base if i.startswith("front_"))
+    n_back = len([i for i in base if i.startswith("back_")])
+    check(f"duplex offset moves all {n_back} back items by (2, -1.5) mm", back_ok)
+    check("duplex offset leaves the front unchanged", front_ok)
+    config.set_setting("duplex_dx", 0.0)
+    config.set_setting("duplex_dy", 0.0)
+    files = layout.export_duplex_test(project, work / "duplex")
+    pages = [len(re.findall(rb"/Type\s*/Page[^s]", f.read_bytes())) for f in files]
+    check("duplex test PDFs (sheet + 2-per-page), 2 pages each",
+          [f.name for f in files] == ["Duplex_test_A5.pdf", "Duplex_test_2-per-page_A4.pdf"]
+          and pages == [2, 2], [f.name for f in files] + pages)
+
+
 def legacy_migration(work: Path):
     """A version-1 GeoPackage ('arbeitsgebiet', EPSG:25832) must migrate to 'work_area'."""
     from qgis.PyQt.QtCore import QVariant
@@ -244,6 +370,20 @@ def run_region(name, work: Path, project, aoi, gpkg):
     for warning in written.warnings:
         print("   warning:", warning)
     if name == "bw":
+        # Second export of the same sheets: everything must come from the render cache.
+        from kartenwerk import render
+        calls = []
+        original = render.render_basemap
+        render.render_basemap = lambda *a, **k: calls.append(1) or original(*a, **k)
+        try:
+            exporter.export_sheets(project, grid_layer, {"output_dir": str(out)})
+        finally:
+            render.render_basemap = original
+        check(f"{name}: re-export downloads nothing (render cache)", calls == [], len(calls))
+    if name == "jp":
+        esri = [p.name for p in cache.entries() if p.name.startswith("esri_imagery")]
+        check(f"{name}: Esri imagery never written to the cache", esri == [], esri)
+    if name == "bw":
         prints = list(out.glob("Print_2-per-page_*.pdf"))
         pages = len(re.findall(rb"/Type\s*/Page[^s]", prints[0].read_bytes())) if prints else 0
         check(f"{name}: 2-per-page print file with {2 * ((len(ids) + 1) // 2)} pages",
@@ -265,6 +405,7 @@ def main(selected):
     work.mkdir(parents=True)
     config.set_cache_dir(work)
     legacy_migration(work)
+    feature_checks(work)
     for fmt, scale_denom in (("A5", 15000), ("A2", 25000), ("A4", 10000)):
         layout_checks(fmt, scale_denom)
 
@@ -279,6 +420,9 @@ def main(selected):
     config.set_setting("back_format", "JPEG")
     config.set_setting("front_attribution", "")
     config.set_setting("back_attribution", "")
+    config.set_setting("render_cache", True)
+    cache.set_cache_root(work / "render_cache")
+    cache.clear()
 
     project = QgsProject.instance()
     project.clear()

@@ -44,8 +44,9 @@ What this means for the maps you make:
 
 ## The example maps in `examples/`
 
-`examples/Sheet_05_32N-R3034C0167.pdf` is an export made with this plugin and
-contains third-party map content, so it is **not** public domain:
+`examples/Sheet_05_32N-R3034C0167.pdf` is an export made with this plugin, and
+`examples/example_preview.jpg` is an image of it. Both contain third-party map
+content, so they are **not** public domain:
 
 - front: TopPlusOpen, © BKG (www.bkg.bund.de), CC BY 4.0
 - back: DOP20, © LGL BW (www.lgl-bw.de), dl-de/by-2-0

@@ -36,6 +36,9 @@ class Source:
     tile_pixel_ratio: int = 1  # XYZ: 2 renders map text larger (easier to read)
     # True when the service returns opaque white (not transparent) outside its coverage.
     white_is_nodata: bool = False
+    # May rendered images be kept in the local render cache? False where the
+    # provider's terms forbid storing data offline (Esri).
+    cacheable: bool = True
     note: str = field(default="", compare=False)
 
     @property
@@ -107,6 +110,8 @@ CATALOG: tuple[Source, ...] = (
         attribution="Imagery: Esri, Maxar, Earthstar Geographics, GIS User Community",
         # z18+ returns "Map data not yet available" placeholders in many rural areas.
         zmax=17,
+        # Esri's terms allow basemap data offline only via Esri Content Packages.
+        cacheable=False,
         note="Worldwide. Check Esri's terms of use; attribution required.",
     ),
     Source(

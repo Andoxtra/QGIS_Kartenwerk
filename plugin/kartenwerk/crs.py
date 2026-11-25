@@ -72,6 +72,55 @@ def sheet_id(zone: int, hemisphere: str, row: int, col: int) -> str:
 
 
 # ---------------------------------------------------------------------------
+# MGRS (Military Grid Reference System) 100 km squares, WGS 84 lettering
+# ---------------------------------------------------------------------------
+_BANDS = "CDEFGHJKLMNPQRSTUVWX"  # 8° latitude bands from 80° S; X spans 72–84° N
+_COLUMN_SETS = ("ABCDEFGH", "JKLMNPQR", "STUVWXYZ")  # repeats every 3 zones
+_ROW_LETTERS = "ABCDEFGHJKLMNPQRSTUV"  # 20 letters, even zones start 5 letters later
+
+
+def mgrs_band(lat: float) -> str:
+    if not (MIN_LAT <= lat <= MAX_LAT):
+        raise ValueError(f"Latitude {lat:.2f}° is outside the MGRS/UTM range.")
+    return _BANDS[min(int((lat - MIN_LAT) // 8), len(_BANDS) - 1)]
+
+
+def mgrs_exception_area(lon: float, lat: float) -> bool:
+    """South-west Norway (31V/32V) and Svalbard (31X–37X) use non-standard zones in MGRS.
+
+    The plugin's grid uses standard 6° zones there, so an MGRS label could
+    disagree with a GPS set to MGRS; it is left out.
+    """
+    lon = ((lon + 180.0) % 360.0) - 180.0
+    return (56.0 <= lat < 64.0 and 0.0 <= lon < 12.0) or (lat >= 72.0 and 0.0 <= lon < 42.0)
+
+
+def mgrs_square(zone: int, easting: float, northing: float) -> str | None:
+    """Two-letter 100 km square id, e.g. 'MU'. None outside the valid easting range."""
+    column = int(easting // 100_000)
+    if not 1 <= column <= 8:
+        return None
+    col_letter = _COLUMN_SETS[(zone - 1) % 3][column - 1]
+    row = int(northing // 100_000) % 20
+    if zone % 2 == 0:
+        row = (row + 5) % 20
+    return col_letter + _ROW_LETTERS[row]
+
+
+def mgrs_label(zone: int, lon: float, lat: float, squares: list[str | None]) -> str | None:
+    """'32U MU' (or '32U MU / NU' when a sheet spans two squares); None where not applicable."""
+    if mgrs_exception_area(lon, lat):
+        return None
+    unique = []
+    for square in squares:
+        if square is None:
+            return None
+        if square not in unique:
+            unique.append(square)
+    return f"{zone}{mgrs_band(lat)} " + " / ".join(unique) if unique else None
+
+
+# ---------------------------------------------------------------------------
 # QGIS helpers
 # ---------------------------------------------------------------------------
 def utm_crs(zone: int, hemisphere: str):
