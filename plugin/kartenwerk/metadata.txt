@@ -18,6 +18,7 @@ hasProcessingProvider=no
 tags=map,atlas,print,topography,aerial,utm,grid,duplex,magnetic declination
 changelog=
     2.1.0
+    - Code released into the public domain (Unlicense); map data keeps its providers' licences (NOTICE.md)
     - Print file with two sheets per page on the next larger paper (A5 on A4, A4 on A3, A3 on A2)
     - Border text and margins scale with the page format
     - Name sheets ("Name sheet" action); names appear in the title, overview and index

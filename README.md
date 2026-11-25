@@ -93,9 +93,11 @@ python3 install_plugin.py --zip        # writes kartenwerk.zip
 In QGIS: **Plugins → Manage and Install Plugins → Install from ZIP**.
 
 **From the QGIS plugin repository:** not published yet. The plugin folder
-contains everything plugins.qgis.org needs (metadata, icon, LICENSE) except a
-contact email: fill in `email=` in `plugin/kartenwerk/metadata.txt`, build the
-ZIP and upload it there with an OSGeo account.
+contains metadata, icon and LICENSE; before uploading, fill in `email=` in
+`plugin/kartenwerk/metadata.txt`, build the ZIP and upload it with an OSGeo
+account. Note: QGIS asks plugins in its repository to comply with GPL v2 or
+later. The Unlicense is generally regarded as GPL-compatible, but reviewers may
+still ask for a GPL licence.
 
 **Into a profile (for development):** close QGIS, then
 
@@ -278,7 +280,8 @@ QGIS_Kartenwerk/
 │   ├── config.py               # geometry, paths, settings
 │   ├── crs.py                  # UTM zone selection, grid convergence
 │   ├── wmm.py, WMM2025.COF     # World Magnetic Model (magnetic declination)
-│   ├── icon.png, LICENSE       # plugin icon, GPL-2.0-or-later
+│   ├── icon.png, LICENSE       # plugin icon, Unlicense (code is public domain)
+│   ├── NOTICE.md               # what is public domain and what is not (map data)
 │   ├── sources.py              # basemap catalog + automatic selection
 │   ├── services.py             # layer-tree helpers, default basemaps
 │   ├── grid.py                 # work area, grid, numbering, neighbours
@@ -339,10 +342,16 @@ the run.
 
 ## Licence
 
-GPL-2.0-or-later, see `LICENSE`. Map data and imagery keep their own licences
-(see [Basemap sources](#basemap-sources)); the attribution printed on each
-sheet must stay there. The World Magnetic Model coefficients (`WMM2025.COF`)
-are public domain (NOAA NCEI / British Geological Survey).
+**The code is public domain** under the [Unlicense](LICENSE): use, copy,
+modify or sell it for any purpose, no attribution needed. The World Magnetic
+Model coefficients (`WMM2025.COF`) are public domain too (NOAA NCEI / British
+Geological Survey).
+
+**The maps are not.** The PDFs contain map data and imagery downloaded from
+third-party services, which keep their own licences (see
+[Basemap sources](#basemap-sources)): keep the attribution printed on each
+sheet, and maps made from OpenTopoMap that you share must be CC-BY-SA. Details
+in [NOTICE.md](NOTICE.md).
 
 ---
 
