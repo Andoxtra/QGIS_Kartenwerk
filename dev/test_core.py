@@ -177,22 +177,24 @@ def layout_checks(fmt, scale_denom):
     check(f"{fmt}: 1 km grid spacing on paper = {expected:.2f} mm",
           gaps and all(abs(g - expected) < 0.25 for g in gaps), [round(g, 2) for g in gaps])
 
-    if fmt in config.TWO_UP_PAPER:
-        two, slots = layout.two_up_layout(project, 3)  # odd count: last page pair half empty
+    for mode in config.PRINT_MODES.get(fmt, ()):
+        sheets, paper, orientation, cols, rows = mode
+        n_up, slots = layout.n_up_layout(project, 3, mode)  # odd count: last page pair half empty
         for i, (front_slot, back_slot) in enumerate(slots):
             for side, slot in (("front", front_slot), ("back", back_slot)):
-                layout.update_side(two, side, {**sheet, "sheet_no": i + 1}, img_path, neighbour,
+                layout.update_side(n_up, side, {**sheet, "sheet_no": i + 1}, img_path, neighbour,
                                    "© Test", info, slot)
-        paper_h, paper_w = config.PAGE_FORMATS[config.TWO_UP_PAPER[fmt]]
-        size = two.pageCollection().page(0).pageSize()
-        check(f"{fmt}: 2-per-page layout on {config.TWO_UP_PAPER[fmt]} portrait, 4 pages",
-              two.pageCollection().pageCount() == 4 and abs(size.width() - paper_w) < 0.01
-              and abs(size.height() - paper_h) < 0.01)
-        bad = safe_zone_violations(two)
-        check(f"{fmt}: 2-per-page items inside the safe zone", not bad, bad[:5])
+        paper_w, paper_h = config.print_mode_paper(mode)
+        pairs = (3 + cols * rows - 1) // (cols * rows)
+        size = n_up.pageCollection().page(0).pageSize()
+        check(f"{fmt}: {sheets}-per-page layout on {paper}, {2 * pairs} pages",
+              n_up.pageCollection().pageCount() == 2 * pairs
+              and abs(size.width() - paper_w) < 0.01 and abs(size.height() - paper_h) < 0.01)
+        bad = safe_zone_violations(n_up)
+        check(f"{fmt}: {sheets}-per-page items inside the safe zone", not bad, bad[:5])
         front_b = slots[1][0].y0
         back_b = slots[1][1].y0
-        check(f"{fmt}: 2-per-page back sits behind its front", front_b == back_b
+        check(f"{fmt}: {sheets}-per-page back sits behind its front", front_b == back_b
               and slots[1][1].page == slots[1][0].page + 1)
 
     metres, length = layout.scale_bar_length(geom)
@@ -430,11 +432,21 @@ def feature_checks(work: Path):
     check("duplex offset leaves the front unchanged", front_ok)
     config.set_setting("duplex_dx", 0.0)
     config.set_setting("duplex_dy", 0.0)
+    config.set_setting("print_mode", 2)
     files = layout.export_duplex_test(project, work / "duplex")
+    config.set_setting("print_mode", 0)
     pages = [len(re.findall(rb"/Type\s*/Page[^s]", f.read_bytes())) for f in files]
     check("duplex test PDFs (sheet + 2-per-page), 2 pages each",
           [f.name for f in files] == ["Duplex_test_A5.pdf", "Duplex_test_2-per-page_A4.pdf"]
           and pages == [2, 2], [f.name for f in files] + pages)
+    config.set_setting("page_format", "A6")
+    config.set_setting("print_mode", 4)
+    files = layout.export_duplex_test(project, work / "duplex_a6")
+    config.set_setting("print_mode", 0)
+    config.set_setting("page_format", "A5")
+    check("duplex test PDFs (A6 + 4-per-page on A4)",
+          [f.name for f in files] == ["Duplex_test_A6.pdf", "Duplex_test_4-per-page_A4.pdf"],
+          [f.name for f in files])
 
 
 def legacy_migration(work: Path):
@@ -532,7 +544,8 @@ def main(selected):
     feature_checks(work)
     for fmt, scale_denom, margin in (("A5", 15000, 5), ("A2", 25000, 5), ("A4", 10000, 5),
                                      ("A5", 15000, 3), ("A3", 20000, 4),
-                                     ("A2", 5000, 5), ("A5", 100000, 5), ("A4", 37500, 5)):
+                                     ("A2", 5000, 5), ("A5", 100000, 5), ("A4", 37500, 5),
+                                     ("A6", 15000, 5)):
         config.set_setting("printer_margin", margin)
         layout_checks(fmt, scale_denom)
     config.set_setting("printer_margin", 5)
@@ -559,7 +572,7 @@ def main(selected):
     aoi = grid.ensure_aoi_layer(project, gpkg)
     # Regions run in one session, so every region after the first is a zone switch.
     for name in selected:
-        config.set_setting("two_up", name == "bw")
+        config.set_setting("print_mode", 2 if name == "bw" else 0)
         try:
             run_region(name, work, project, aoi, gpkg)
         except Exception:

@@ -72,7 +72,7 @@ class SettingsDialog(QDialog):
 
         self._update_quality_enabled()
         self._update_auto_note()
-        self._update_two_up()
+        self._update_print_mode()
         self._update_scale_hint()
 
     # ------------------------------------------------------------------
@@ -80,7 +80,7 @@ class SettingsDialog(QDialog):
     # ------------------------------------------------------------------
     def _map_tab(self) -> QWidget:
         self.page_combo = QComboBox()
-        for name in ("A2", "A3", "A4", "A5"):
+        for name in ("A2", "A3", "A4", "A5", "A6"):
             w, h = config.PAGE_FORMATS[name]
             self.page_combo.addItem(f"{name} ({w:.0f} × {h:.0f} mm)", name)
         self._select_data(self.page_combo, config.page_format())
@@ -209,11 +209,13 @@ class SettingsDialog(QDialog):
             "behind the same features on the front.\nOff: the back shows the aerial image "
             "normally oriented, easier to read on its own.")
 
-        self.two_up = QCheckBox()
-        self.two_up.setChecked(config.get_bool("two_up"))
-        self.two_up.setToolTip("Extra PDF for home printers: two sheets stacked on the next larger "
-                               "paper with cut marks. Print it double-sided, 'flip on long edge'.")
-        self.page_combo.currentIndexChanged.connect(self._update_two_up)
+        self.print_mode = QComboBox()
+        self.print_mode.setToolTip(
+            "Extra PDF for home printers: several sheets combined on one larger paper with cut "
+            "marks. Print it double-sided, 'flip on long edge' (portrait) or 'flip on short "
+            "edge' (landscape).")
+        self.page_combo.currentIndexChanged.connect(self._update_print_mode)
+        self.print_mode.currentIndexChanged.connect(self._print_mode_changed)
 
         dx, dy = config.duplex_offset(two_up=False)
         self.offset_dx, self.offset_dy = _offset_spin(dx), _offset_spin(dy)
@@ -231,10 +233,10 @@ class SettingsDialog(QDialog):
         form.addRow("Back format", self.back_format)
         form.addRow("JPEG quality", self.jpeg_quality)
         form.addRow("", self.mirror_back)
-        form.addRow("", self.two_up)
+        form.addRow("Print file", self.print_mode)
         form.addRow("Duplex offset, sheet PDFs",
                     self._row(self.offset_dx, self.offset_dy, labels=("right", "down")))
-        form.addRow("Duplex offset, 2-per-page",
+        form.addRow("Duplex offset, print file",
                     self._row(self.offset2_dx, self.offset2_dy, labels=("right", "down")))
         form.addRow("", test_button)
         form.addRow("", _note(
@@ -428,15 +430,24 @@ class SettingsDialog(QDialog):
         self.back_attribution.setText(fa)
         self._update_quality_enabled()
 
-    def _update_two_up(self, *args):
-        paper = config.TWO_UP_PAPER.get(self.page_combo.currentData())
-        if paper:
-            self.two_up.setText(f"Also create a print file with two sheets per {paper} page")
-        else:
-            self.two_up.setText("Two sheets per page: not available for A2")
-        self.two_up.setEnabled(paper is not None)
-        self.offset2_dx.setEnabled(paper is not None)
-        self.offset2_dy.setEnabled(paper is not None)
+    def _update_print_mode(self, *args):
+        fmt = self.page_combo.currentData()
+        self.print_mode.blockSignals(True)
+        self.print_mode.clear()
+        self.print_mode.addItem("None (sheets print at actual size)", 0)
+        for sheets, paper, orientation, cols, rows in config.PRINT_MODES.get(fmt, ()):
+            self.print_mode.addItem(
+                f"{sheets} × {fmt} on {paper} ({cols} × {rows})", sheets)
+        self.print_mode.blockSignals(False)
+        self._select_data(self.print_mode, config.get_int("print_mode"))
+        enabled = bool(config.PRINT_MODES.get(fmt, ()))
+        self.print_mode.setEnabled(enabled)
+        self._print_mode_changed()
+
+    def _print_mode_changed(self, *args):
+        active = self.print_mode.isEnabled() and self.print_mode.currentData() not in (0, None)
+        self.offset2_dx.setEnabled(active)
+        self.offset2_dy.setEnabled(active)
 
     def _snap_scale(self):
         snapped = config.normalize_scale(self.scale_spin.value())
@@ -462,9 +473,11 @@ class SettingsDialog(QDialog):
         self._update_cache_label()
 
     def _duplex_test(self):
-        # Uses the page format chosen in the dialog, even before OK is pressed.
+        # Uses the page format and print mode chosen in the dialog, even before OK.
         old_format = config.get_setting("page_format")
+        old_mode = config.get_setting("print_mode")
         config.set_setting("page_format", self.page_combo.currentData())
+        config.set_setting("print_mode", int(self.print_mode.currentData() or 0))
         try:
             output = self.output_edit.text().strip()
             out_dir = Path(output).expanduser() if output else config.default_output_dir()
@@ -475,6 +488,7 @@ class SettingsDialog(QDialog):
             return
         finally:
             config.set_setting("page_format", old_format)
+            config.set_setting("print_mode", old_mode)
         QMessageBox.information(
             self, "Kartenwerk – Duplex test",
             "Written:\n" + "\n".join(str(f) for f in files)
@@ -499,7 +513,7 @@ class SettingsDialog(QDialog):
             "back_attribution": self.back_attribution.text().strip(),
             "dpi": self.dpi_spin.value(),
             "auto_number": self.auto_number.isChecked(),
-            "two_up": self.two_up.isChecked(),
+            "print_mode": int(self.print_mode.currentData() or 0),
             "render_cache": self.render_cache.isChecked(),
             "mirror_back": self.mirror_back.isChecked(),
             "overview_basemap": self.overview_combo.currentData() or "opentopomap",

@@ -47,7 +47,7 @@ def _merge_pdfs(files: list[Path], out_path: Path) -> None:
 
 
 class ExportResult(list):
-    """List of written sheet PDFs, plus non-fatal warnings and the optional 2-up print file."""
+    """List of written sheet PDFs, plus non-fatal warnings and the optional print file."""
 
     def __init__(self):
         super().__init__()
@@ -55,17 +55,18 @@ class ExportResult(list):
         self.print_file: Path | None = None
 
 
-def _export_two_up(project, jobs: list[dict], out_dir: Path, dpi: int, geom) -> Path:
-    """One PDF with two sheets per page on the next larger paper, ready for duplex printing."""
-    paper = config.TWO_UP_PAPER[geom.name]
-    print_layout, slots = layout.two_up_layout(project, len(jobs))
+def _export_print_file(project, jobs: list[dict], out_dir: Path, dpi: int, geom, mode) -> Path:
+    """One PDF with several sheets per page on the chosen paper, ready for duplex printing."""
+    sheets, paper, *_ = mode
+    print_layout, slots = layout.n_up_layout(project, len(jobs), mode)
     temp: list[Path] = []
     try:
         for job, (front_slot, back_slot) in zip(jobs, slots):
             for side, slot in (("front", front_slot), ("back", back_slot)):
                 temp += layout.update_side(print_layout, side, job["sheet"], job["images"][side],
                                            job["neighbour"], job["text"][side], job["info"], slot)
-        return layout.export_pdf(print_layout, out_dir / f"Print_2-per-page_{paper}.pdf", dpi)
+        return layout.export_pdf(print_layout, out_dir / f"Print_{sheets}-per-page_{paper}.pdf",
+                                 dpi)
     finally:
         for tmp in temp:
             tmp.unlink(missing_ok=True)
@@ -263,8 +264,8 @@ def export_sheets(
     # Unique per export: QGIS caches pictures by file path, so names reused within
     # one session (e.g. re-exporting after changing the basemap) could show stale images.
     run = uuid.uuid4().hex[:8] + "_"
-    two_up = bool(settings.get("two_up")) and geom.name in config.TWO_UP_PAPER
-    two_up_jobs: list[dict] = []
+    print_mode = config.print_mode(geom.name)
+    print_jobs: list[dict] = []
     use_cache = bool(settings.get("render_cache", True))
 
     def finish(job: dict) -> None:
@@ -286,9 +287,9 @@ def export_sheets(
             layout.export_pdf(print_layout, job["pdf"], dpi)
             result.append(job["pdf"])
             written_sheets.append((job["sheet"], job["pdf"]))
-            if two_up:
+            if print_mode:
                 job["keep_images"] = True  # needed again for the print file
-                two_up_jobs.append(job)
+                print_jobs.append(job)
         except Exception as exc:  # keep going, report at the end
             errors.append(f"{job['stem']}: {exc}")
         finally:
@@ -360,14 +361,15 @@ def export_sheets(
         except OSError:
             pass
 
-    if two_up_jobs:
+    if print_jobs:
         try:
-            result.print_file = _export_two_up(project, two_up_jobs, out_dir, dpi, geom)
+            result.print_file = _export_print_file(project, print_jobs, out_dir, dpi, geom,
+                                                   print_mode)
         except Exception as exc:
-            errors.append(f"two sheets per page print file: {exc}")
+            errors.append(f"{print_mode[0]} sheets per page print file: {exc}")
         finally:
             if not keep_cache:
-                for job in two_up_jobs:
+                for job in print_jobs:
                     for tmp in job["images"].values():
                         tmp.unlink(missing_ok=True)
 

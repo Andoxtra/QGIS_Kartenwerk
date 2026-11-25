@@ -6,8 +6,8 @@
 [PDF](examples/Sheet_05_32N-R2985C0167.pdf) · map data © BKG (CC BY 4.0) and
 © LGL BW (dl-de/by-2-0).*
 
-A QGIS plugin that turns a work area into landscape map sheets (A2, A3, A4 or
-A5) at a selectable scale (default 1:15 000), ready for double-sided printing:
+A QGIS plugin that turns a work area into landscape map sheets (A2, A3, A4, A5
+or A6) at a selectable scale (default 1:15 000), ready for double-sided printing:
 
 - **Front:** a topographic map with a 1 km UTM grid, numbered in the border.
   The border also carries the sheet number, a scale bar, grid/true/magnetic
@@ -163,7 +163,7 @@ count.
 
 | Setting | Default | Description |
 |---|---|---|
-| Page format | `A5` | `A2`, `A3`, `A4` or `A5` landscape. Regenerate the grid after changing it. |
+| Page format | `A5` | `A2`, `A3`, `A4`, `A5` or `A6` landscape. Regenerate the grid after changing it. |
 | Scale | `1:15 000` | Any value from `1:5 000` to `1:100 000`, rounded to 500 (the arrows step by 2 500). A smaller number zooms in: larger, more readable text but less area per sheet. Below 1:10 000 OpenTopoMap and Esri imagery are enlarged and look soft (national services such as DOP20 or TopPlusOpen stay sharp), and the 1 km grid lines are up to 200 mm apart. Regenerate the grid after changing it. |
 | Sheet overlap | `5 %` | None, 5 % or 10 %. Neighbouring sheets share this strip; a dashed line marks where the next sheet begins. Regenerate the grid after changing it. |
 | Front (map) / Back (imagery) | Automatic | Automatic, a catalog source, or a raster layer from the project. The dialog shows what Automatic picks for the current work area. |
@@ -181,8 +181,8 @@ count.
 | Front/Back format | `PNG` | `PNG` (lossless) or `JPEG` (faster, smaller). |
 | JPEG quality | `92` | 50–100. |
 | Mirror the back side | on | On: the aerial back is mirrored left↔right and lines up with the front when held against the light. Off: the back is printed normally oriented, like a second map. |
-| Two sheets per page | off | Also writes a print file with two sheets stacked on the next larger paper (A5 → A4, A4 → A3, A3 → A2) with cut marks. Not available for A2. |
-| Duplex offset | 0 / 0 mm | Moves all back-side content to compensate a printer's duplex shift; separate values for the sheet PDFs and the two-per-page file. See [Printing](#printing). |
+| Print file | None | Also writes a print file with several sheets combined on one larger paper with cut marks: `2 × A5 on A4`, `2 × A6 on A5` or `4 × A6 on A4`. A2, A3 and A4 print at actual size. |
+| Duplex offset | 0 / 0 mm | Moves all back-side content to compensate a printer's duplex shift; separate values for the sheet PDFs and the print file. See [Printing](#printing). |
 
 **Advanced tab**
 
@@ -213,7 +213,8 @@ output/
 ├── Sheet_01_32N-R1564C0088.pdf     # 2 pages: front topo, back mirrored imagery
 ├── Sheet_02_32N-R1564C0089.pdf
 ├── all_sheets.pdf                  # overview + all sheets (needs pdfunite or Ghostscript)
-├── Print_2-per-page_A4.pdf         # optional: two sheets per A4 page, for home printers
+├── Print_2-per-page_A4.pdf         # optional: two A5 sheets per A4 page, for home printers
+├── Print_4-per-page_A4.pdf         # optional: four A6 sheets per A4 page
 └── index.csv                       # comma-separated, UTF-8
 ```
 
@@ -241,7 +242,7 @@ Nothing is printed closer to the paper edge than the **printer margin**
 3 mm give a bigger map on printers that can print closer to the edge). Inside
 it, the border on A5 has lanes of 7 mm left and right (equal, so the mirrored
 back registers with the front), 6 mm at the top and 7 mm at the bottom. On
-larger pages the border text and lanes grow with the page (A4 × 1.15,
+larger pages the border text and lanes grow with the page (A6 × 0.87, A4 × 1.15,
 A3 × 1.35, A2 × 1.6), so they stay in proportion. One grid cell is the map
 frame at the chosen scale minus the overlap. A5 at 1:15 000 with 5 % overlap:
 
@@ -279,22 +280,24 @@ Scandinavia at 1:5 000); IDs stay unique and stable.
    right**, so each back lands behind its front. What the printer calls this
    depends on the driver:
    - single sheet PDFs (landscape pages): usually **"flip on short edge"**,
-   - the two-per-page print file (portrait pages): usually **"flip on long
-     edge"**.
+   - the print file with two sheets stacked on portrait paper: usually **"flip
+     on long edge"**; the 4 × A6 landscape file: **"flip on short edge"**.
 
    A mirrored or upside-down back means the other flip setting.
 4. **Duplex offset.** Most duplex printers shift the back by 1–2 mm. Settings →
    Printing → **Create duplex test pages** writes `Duplex_test_A5.pdf` (and
-   `Duplex_test_2-per-page_A4.pdf`). Print it double-sided like the maps, hold
+   `Duplex_test_2-per-page_A4.pdf`, or `Duplex_test_4-per-page_A4.pdf` when a
+   print file is selected). Print it double-sided like the maps, hold
    it against a window and look at the **back**: read where the front's cross
    shows through on the back's millimetre rulers (+ = right, + = down) and
    enter both values as the duplex offset. The test pages are always printed
    without offset, so a new reading simply replaces the old value. The two
    files need separate values because printer drivers rotate landscape and
    portrait pages differently.
-5. **Paper.** A5 sheets need A5 paper in the printer, or switch on **Two
-   sheets per page** and print the `Print_2-per-page_A4.pdf` file on A4, then
-   cut along the cut marks at the middle of the page. For field use, 100–120
+5. **Paper.** A5 sheets need A5 paper in the printer, or choose **Print file →
+   2 × A5 on A4** and print the `Print_2-per-page_A4.pdf` file on A4, then
+   cut along the cut marks at the middle of the page. A6 sheets print on A6
+   paper, two on an A5 sheet, or four on an A4 sheet. For field use, 100–120
    g/m² paper (or waterproof paper) holds up better than standard 80 g/m².
 6. **Large series.** Print a test sheet before printing everything; most
    problems (scale, duplex, cut-off text) show on the first page.

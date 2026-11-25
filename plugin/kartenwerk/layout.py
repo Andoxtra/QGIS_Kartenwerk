@@ -67,16 +67,17 @@ def u(value: float) -> float:
 class Slot:
     """Where one side of one sheet goes.
 
-    page: page index; y0: vertical offset on that page (two sheets per page);
-    dx, dy: duplex offset applied to all of this side's items (back only);
+    page: page index; x0, y0: horizontal/vertical offset on that page (n sheets per
+    page); dx, dy: duplex offset applied to all of this side's items (back only);
     prefix: item-id prefix.
     """
 
     def __init__(self, side: str, page: int, y0: float = 0.0, prefix: str | None = None,
-                 dx: float = 0.0, dy: float = 0.0):
+                 dx: float = 0.0, dy: float = 0.0, x0: float = 0.0):
         self.side = side
         self.page = page
         self.y0 = y0
+        self.x0 = x0
         self.prefix = prefix if prefix is not None else f"{side}_"
         self.dx = dx
         self.dy = dy
@@ -181,7 +182,7 @@ def _distance_text(metres: float) -> str:
 def _add_scale_bar(layout, slot: Slot, geom: config.PageGeometry) -> None:
     p, page, y0 = slot.prefix, slot.page, slot.y0
     metres, length = scale_bar_length(geom)
-    x0 = geom.map_x
+    x0 = slot.x0 + geom.map_x
     bottom = geom.bottom + y0
     segments = 4
     seg = length / segments
@@ -204,6 +205,7 @@ def _add_scale_bar(layout, slot: Slot, geom: config.PageGeometry) -> None:
 
 def _add_side(layout: QgsPrintLayout, slot: Slot, geom: config.PageGeometry) -> None:
     p, page, y0 = slot.prefix, slot.page, slot.y0
+    ox = slot.x0
     safe = config.safe_mm()
     top = y0 + safe
     bottom = y0 + geom.bottom
@@ -218,20 +220,21 @@ def _add_side(layout: QgsPrintLayout, slot: Slot, geom: config.PageGeometry) -> 
     picture.setFrameStrokeColor(QColor("black"))
     layout.addLayoutItem(picture)
     picture.attemptResize(QgsLayoutSize(geom.map_w, geom.map_h, _MM))
-    picture.attemptMove(QgsLayoutPoint(geom.map_x, map_y, _MM), True, False, page)
+    picture.attemptMove(QgsLayoutPoint(ox + geom.map_x, map_y, _MM), True, False, page)
 
     # --- top row -------------------------------------------------------------
     row_h = geom.map_y - u(_KM_ROW_H) - u(0.2) - safe
-    _label(layout, p + "title", "", geom.map_x, top, geom.page_w * 0.42, row_h,
+    _label(layout, p + "title", "", ox + geom.map_x, top, geom.page_w * 0.42, row_h,
            page=page, align=Qt.AlignLeft)
-    _label(layout, p + "neighbor_top", "", geom.page_w / 2 - u(20), top, u(40), row_h, page=page)
+    _label(layout, p + "neighbor_top", "", ox + geom.page_w / 2 - u(20), top, u(40), row_h,
+           page=page)
     north_w = u(62.0)
-    _label(layout, p + "north", "", geom.right - north_w, top, north_w, row_h,
+    _label(layout, p + "north", "", ox + geom.right - north_w, top, north_w, row_h,
            page=page, align=Qt.AlignRight)
 
     # --- sides: neighbours, rotated to read upwards on both sides --------------
-    lane_cx_left = (safe + geom.map_x) / 2.0
-    lane_cx_right = geom.page_w - lane_cx_left
+    lane_cx_left = (safe + ox + geom.map_x) / 2.0
+    lane_cx_right = ox + geom.page_w - lane_cx_left
     cy = map_y + geom.map_h / 2.0
     length = u(_SIDE_LABEL_LEN)
     for name, cx in (("neighbor_left", lane_cx_left), ("neighbor_right", lane_cx_right)):
@@ -240,23 +243,23 @@ def _add_side(layout: QgsPrintLayout, slot: Slot, geom: config.PageGeometry) -> 
 
     # --- bottom rows -----------------------------------------------------------
     _add_scale_bar(layout, slot, geom)
-    _label(layout, p + "neighbor_bottom", "", geom.page_w / 2 - u(20), bottom + u(0.5), u(40),
-           u(3.8), page=page)
-    coord_right = geom.right - u(_LOCATOR_MAX_W) - u(2.0)
+    _label(layout, p + "neighbor_bottom", "", ox + geom.page_w / 2 - u(20), bottom + u(0.5),
+           u(40), u(3.8), page=page)
+    coord_right = ox + geom.right - u(_LOCATOR_MAX_W) - u(2.0)
     # Row B right: UTM zone + MGRS square; row C: attribution left, SW corner right.
     _label(layout, p + "coord", "", coord_right - u(40), bottom + u(0.7), u(40), u(2.8),
            page=page, align=Qt.AlignRight)
     _label(layout, p + "corner", "", coord_right - u(50), bottom + u(4.5), u(50), u(2.3),
            page=page, align=Qt.AlignRight)
-    _label(layout, p + "source", "", geom.map_x, bottom + u(4.5),
-           coord_right - u(52) - geom.map_x, u(2.3), page=page, align=Qt.AlignLeft)
+    _label(layout, p + "source", "", ox + geom.map_x, bottom + u(4.5),
+           coord_right - u(52) - (ox + geom.map_x), u(2.3), page=page, align=Qt.AlignLeft)
 
     locator = QgsLayoutItemPicture(layout)
     locator.setId(p + "locator")
     locator.setResizeMode(QgsLayoutItemPicture.Stretch)
     layout.addLayoutItem(locator)
     locator.attemptResize(QgsLayoutSize(u(_LOCATOR_H), u(_LOCATOR_H), _MM))
-    locator.attemptMove(QgsLayoutPoint(geom.right - u(_LOCATOR_H), bottom + u(0.3), _MM),
+    locator.attemptMove(QgsLayoutPoint(ox + geom.right - u(_LOCATOR_H), bottom + u(0.3), _MM),
                         True, False, page)
     _shift(layout, p, slot.dx, slot.dy)
 
@@ -310,52 +313,70 @@ def ensure_layout(project: QgsProject, force: bool = False) -> QgsPrintLayout:
 
 
 # ---------------------------------------------------------------------------
-# "two sheets per page" print file
+# "n sheets per page" print file
 # ---------------------------------------------------------------------------
-def two_up_layout(project: QgsProject, count: int,
-                  offset: tuple[float, float] | None = None,
-                  ) -> tuple[QgsPrintLayout, list[tuple[Slot, Slot]]]:
-    """Layout with two sheets stacked on the next larger paper (portrait).
+def n_up_layout(project: QgsProject, count: int,
+                mode: tuple,
+                offset: tuple[float, float] | None = None,
+                ) -> tuple[QgsPrintLayout, list[tuple[Slot, Slot]]]:
+    """Layout with several sheets placed in the grid of a print-file mode on one paper.
 
-    Page 2k holds the fronts of sheets 2k and 2k+1 (top, bottom), page 2k+1 their
-    backs in the same positions: duplex printing with "flip on long edge" turns the
-    paper about its vertical axis, which keeps top and bottom, so every back lands
-    behind its front. Returns the layout (not added to the project) and the
+    ``mode`` is a config.PRINT_MODES entry (sheets, paper, orientation, cols, rows).
+    Page 2k holds the fronts of the sheets in group k, page 2k+1 their backs in the
+    same positions: duplex printing turns the paper about its vertical axis, so every
+    back lands behind its front. Returns the layout (not added to the project) and the
     (front slot, back slot) of each sheet.
     """
     geom = config.page_geometry()
     _use_scale(geom)
-    paper = config.TWO_UP_PAPER[geom.name]
-    paper_h, paper_w = config.PAGE_FORMATS[paper]  # portrait: long side vertical
+    _, paper, orientation, cols, rows = mode
+    paper_w, paper_h = config.print_mode_paper(mode)
     layout = QgsPrintLayout(project)
-    layout.setName(f"Kartenwerk 2-up {paper}")
+    layout.setName(f"Kartenwerk {cols * rows}-up {paper}")
     layout.initializeDefaults()
     pages = layout.pageCollection()
-    pairs = (count + 1) // 2
+    per_page = cols * rows
+    pairs = (count + per_page - 1) // per_page
     for index in range(pairs * 2):
         page = pages.page(0) if index == 0 else QgsLayoutItemPage(layout)
         page.setPageSize(QgsLayoutSize(paper_w, paper_h, _MM))
         if index:
             pages.addPage(page)
 
-    half = paper_h / 2.0
-    offsets = ((half - geom.page_h) / 2.0, half + (half - geom.page_h) / 2.0)
+    # Centre the sheet grid on the paper.
+    grid_w = cols * geom.page_w
+    grid_h = rows * geom.page_h
+    grid_x0 = (paper_w - grid_w) / 2.0
+    grid_y0 = (paper_h - grid_h) / 2.0
     dx, dy = config.duplex_offset(two_up=True) if offset is None else offset
     slots = []
     for i in range(count):
-        pair, pos = divmod(i, 2)
-        front = Slot("front", 2 * pair, offsets[pos], f"s{i}f_")
-        back = Slot("back", 2 * pair + 1, offsets[pos], f"s{i}b_", dx=dx, dy=dy)
+        pair, pos = divmod(i, per_page)
+        row, col = divmod(pos, cols)
+        x = grid_x0 + col * geom.page_w
+        y = grid_y0 + row * geom.page_h
+        front = Slot("front", 2 * pair, y, f"s{i}f_", x0=x)
+        back = Slot("back", 2 * pair + 1, y, f"s{i}b_", dx=dx, dy=dy, x0=x)
         _add_side(layout, front, geom)
         _add_side(layout, back, geom)
         slots.append((front, back))
 
-    # Cut marks on the front pages, inside the printable area at both paper edges.
+    # Cut marks on the front pages, inside the printable area at every internal
+    # grid boundary (horizontal lines between rows, vertical lines between columns).
     mark = u(6.0)
+    safe = config.safe_mm()
     for pair in range(pairs):
-        for x in (config.safe_mm(), paper_w - config.safe_mm() - mark):
-            _rect(layout, f"cut{pair}_{int(x)}", x, half - 0.1, mark, 0.2, 2 * pair, "black",
-                  stroke=0)
+        page = 2 * pair
+        for col in range(1, cols):
+            cx = grid_x0 + col * geom.page_w
+            for y in (safe, paper_h - safe - mark):
+                _rect(layout, f"cut{pair}_c{col}_{int(y)}", cx - 0.1, y, 0.2, mark, page,
+                      "black", stroke=0)
+        for row in range(1, rows):
+            cy = grid_y0 + row * geom.page_h
+            for x in (safe, paper_w - safe - mark):
+                _rect(layout, f"cut{pair}_r{row}_{int(x)}", x, cy - 0.1, mark, 0.2, page,
+                      "black", stroke=0)
     return layout, slots
 
 
@@ -461,6 +482,7 @@ def _add_km_labels(layout, slot: Slot, extent, geom: config.PageGeometry,
     """Kilometre labels in the border at every 1 km grid line (rebuilt per sheet)."""
     p = f"{slot.prefix}km_"
     page, y0 = slot.page, slot.y0
+    ox = slot.x0
     _remove_items(layout, p)
     safe = config.safe_mm()
     spacing = config.GRID_SPACING_M
@@ -470,11 +492,11 @@ def _add_km_labels(layout, slot: Slot, extent, geom: config.PageGeometry,
     e = math.ceil(extent.xMinimum() / spacing) * spacing
     i = 0
     while e <= extent.xMaximum():
-        x = geom.map_x + (e - extent.xMinimum()) * sx
+        x = ox + geom.map_x + (e - extent.xMinimum()) * sx
         if mirrored:  # the mirrored back image runs right↔left
-            x = geom.map_x + geom.map_w - (x - geom.map_x)
+            x = ox + geom.map_x + geom.map_w - (x - ox - geom.map_x)
         w = u(8.0)
-        if x - w / 2 >= safe and x + w / 2 <= geom.page_w - safe:
+        if x - w / 2 >= ox + safe and x + w / 2 <= ox + geom.page_w - safe:
             text = _km_html(e)
             # Eastings are labelled along the top only (the bottom row holds the scale bar).
             _label(layout, f"{p}e{i}t", text, x - w / 2,
@@ -493,9 +515,9 @@ def _add_km_labels(layout, slot: Slot, extent, geom: config.PageGeometry,
         if abs(y - mid) > u(_SIDE_LABEL_LEN / 2 - 6.0) and y - h / 2 >= geom.map_y - u(1.0) \
                 and y + h / 2 <= geom.bottom + u(0.2):
             text = _km_html(n)
-            _label(layout, f"{p}n{i}l", text, safe, y0 + y - h / 2, lane_w, h, page=page,
+            _label(layout, f"{p}n{i}l", text, ox + safe, y0 + y - h / 2, lane_w, h, page=page,
                    align=Qt.AlignRight)
-            _label(layout, f"{p}n{i}r", text, geom.right + u(0.5), y0 + y - h / 2, lane_w, h,
+            _label(layout, f"{p}n{i}r", text, ox + geom.right + u(0.5), y0 + y - h / 2, lane_w, h,
                    page=page, align=Qt.AlignLeft)
         n += spacing
         i += 1
@@ -637,8 +659,8 @@ def update_side(
     locator.refreshPicture()
     locator.attemptResize(QgsLayoutSize(w, h, _MM))
     locator.attemptMove(
-        QgsLayoutPoint(geom.right - w, slot.y0 + geom.bottom + u(0.3) + (u(_LOCATOR_H) - h) / 2,
-                       _MM), True, False, slot.page)
+        QgsLayoutPoint(slot.x0 + geom.right - w, slot.y0 + geom.bottom + u(0.3)
+                       + (u(_LOCATOR_H) - h) / 2, _MM), True, False, slot.page)
     _shift(layout, p + "locator", slot.dx, slot.dy)
     return [path]
 
@@ -706,7 +728,7 @@ def _calibration_pages(layout: QgsPrintLayout, w: float, h: float, page0: int, t
 
 
 def export_duplex_test(project: QgsProject, out_dir: Path) -> list[Path]:
-    """Duplex test PDFs for the current page format (and its two-per-page paper).
+    """Duplex test PDFs for the current page format and its print-file paper.
 
     Always printed WITHOUT duplex offset: the reading replaces the stored offset.
     """
@@ -716,11 +738,14 @@ def export_duplex_test(project: QgsProject, out_dir: Path) -> list[Path]:
     out_dir = Path(out_dir)
     jobs = [(geom.name, geom.page_w, geom.page_h, f"Duplex_test_{geom.name}.pdf",
              f"{geom.name} landscape, for the sheet PDFs")]
-    paper = config.TWO_UP_PAPER.get(geom.name)
-    if paper:
-        paper_h, paper_w = config.PAGE_FORMATS[paper]
-        jobs.append((paper, paper_w, paper_h, f"Duplex_test_2-per-page_{paper}.pdf",
-                     f"{paper} portrait, for the two-per-page print file"))
+    mode = config.print_mode(geom.name)
+    if mode:
+        sheets, paper, *_ = mode
+        paper_w, paper_h = config.print_mode_paper(mode)
+        orientation = "portrait" if paper_h > paper_w else "landscape"
+        jobs.append((paper, paper_w, paper_h,
+                     f"Duplex_test_{sheets}-per-page_{paper}.pdf",
+                     f"{paper} {orientation}, for the {sheets}-per-page print file"))
     written = []
     for _, w, h, filename, title in jobs:
         layout = QgsPrintLayout(project)

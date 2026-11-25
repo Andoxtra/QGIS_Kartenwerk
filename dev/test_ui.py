@@ -125,11 +125,18 @@ def main() -> int:
         config.set_project_overlays(*dlg.project_values())
         check("overlays stored in the project", config.project_overlays() == [route.id()]
               and config.project_overlays_on_back())
-        for fmt, expected in (("A5", "A4"), ("A2", None)):
+        for fmt, expected_modes in (("A5", [0, 2]), ("A6", [0, 2, 4]), ("A2", [0])):
             dlg._select_data(dlg.page_combo, fmt)
-            enabled = dlg.two_up.isEnabled() and dlg.offset2_dx.isEnabled()
-            check(f"two-per-page option for {fmt}", enabled == (expected is not None)
-                  and (expected is None or expected in dlg.two_up.text()), dlg.two_up.text())
+            data = [dlg.print_mode.itemData(i) for i in range(dlg.print_mode.count())]
+            enabled = dlg.print_mode.isEnabled()
+            check(f"print modes for {fmt}", data == expected_modes
+                  and enabled == (len(expected_modes) > 1), data)
+        dlg._select_data(dlg.page_combo, "A6")
+        dlg._select_data(dlg.print_mode, 4)
+        check("4-up A6 enables the print-file offset", dlg.offset2_dx.isEnabled()
+              and dlg.offset2_dy.isEnabled())
+        dlg._select_data(dlg.print_mode, 0)
+        check("no print file disables the print-file offset", not dlg.offset2_dx.isEnabled())
         dlg._select_data(dlg.page_combo, "A5")
         dlg.offset_dx.setValue(9.0)
         check("duplex offset limited to ±5 mm", dlg.offset_dx.value() == 5.0, dlg.offset_dx.value())
@@ -167,7 +174,7 @@ def main() -> int:
         dlg.mirror_back.setChecked(True)
         check("printer margin choices", [dlg.margin_combo.itemData(i) for i in
                                          range(dlg.margin_combo.count())] == [5, 4, 3])
-        check("dialog values complete", {"overlap", "printer_margin", "two_up", "render_cache",
+        check("dialog values complete", {"overlap", "printer_margin", "print_mode", "render_cache",
                                          "duplex_dx",
                                          "duplex_dy", "duplex_2up_dx", "duplex_2up_dy"}
               <= set(values), sorted(values))

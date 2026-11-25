@@ -41,14 +41,33 @@ PAGE_FORMATS = {
     "A3": (420.0, 297.0),
     "A4": (297.0, 210.0),
     "A5": (210.0, 148.0),
+    "A6": (148.0, 105.0),
 }
 DEFAULT_PAGE_FORMAT = "A5"
 
 # Border text and the border lanes grow with the page so they stay in proportion.
-TEXT_SCALE = {"A5": 1.0, "A4": 1.15, "A3": 1.35, "A2": 1.6}
+TEXT_SCALE = {"A6": 0.87, "A5": 1.0, "A4": 1.15, "A3": 1.35, "A2": 1.6}
 
-# "Two sheets per page" print file: each format on the next larger paper (portrait).
-TWO_UP_PAPER = {"A5": "A4", "A4": "A3", "A3": "A2"}
+# Combined "n-up" print files. For each format, a tuple of modes; each mode is
+# (sheets_per_page, paper, orientation, cols, rows). "portrait" turns the paper
+# (short side horizontal); "landscape" keeps it as in PAGE_FORMATS. Two sheets
+# stack vertically on portrait paper; four A6 fill a 2×2 grid on landscape A4.
+# A2–A4 always print at actual size, so they have no combined mode.
+PRINT_MODES = {
+    "A2": (),
+    "A3": (),
+    "A4": (),
+    "A5": ((2, "A4", "portrait", 1, 2),),
+    "A6": ((2, "A5", "portrait", 1, 2),
+           (4, "A4", "landscape", 2, 2)),
+}
+
+
+def print_mode_paper(mode: tuple) -> tuple[float, float]:
+    """Oriented page (width, height) in mm of an n-up print-file mode."""
+    _, paper, orientation, _, _ = mode
+    pw, ph = PAGE_FORMATS[paper]
+    return (ph, pw) if orientation == "portrait" else (pw, ph)
 
 # Overlap between neighbouring sheets (percent of the map frame), so features
 # near a sheet edge also appear on the next sheet.
@@ -134,6 +153,22 @@ def safe_mm() -> float:
     except (TypeError, ValueError):
         value = DEFAULT_PRINTER_MARGIN
     return float(value if value in PRINTER_MARGINS else DEFAULT_PRINTER_MARGIN)
+
+
+def print_mode(name: str | None = None) -> tuple | None:
+    """Resolved n-up print-file mode for the configured format, or None if unset.
+
+    Returns the PRINT_MODES entry matching the ``print_mode`` setting (the number
+    of sheets per page), or None when the setting is 0 or not offered for the format.
+    """
+    name = (name or page_format()).upper()
+    if name not in PAGE_FORMATS:
+        name = DEFAULT_PAGE_FORMAT
+    sheets = get_int("print_mode")
+    for mode in PRINT_MODES.get(name, ()):
+        if mode[0] == sheets:
+            return mode
+    return None
 
 
 def overlap() -> int:
@@ -258,10 +293,10 @@ def _defaults() -> dict:
         "scale": DEFAULT_SCALE,
         "overlap": DEFAULT_OVERLAP,
         "printer_margin": DEFAULT_PRINTER_MARGIN,
-        "two_up": False,
+        "print_mode": 0,
         "render_cache": True,
         # Mirror the back so it lines up with the front when held against the light.
-        "mirror_back": True,
+        "mirror_back": False,
         # Overview page: map behind the sheet diagram ("none", catalog key, "layer:<name>")
         # and the colour of sheet outlines/numbers on it.
         "overview_basemap": "opentopomap",
@@ -324,7 +359,7 @@ def duplex_offset(two_up: bool = False) -> tuple[float, float]:
     back's rulers (+ = right / down as seen on the back). Those two readings are
     stored as they are and REPLACE any earlier offset; the back content then moves
     by exactly (dx, dy). Separate values for the landscape sheet PDFs and for the
-    portrait two-per-page file, because drivers rotate the two differently.
+    n-up print file, because drivers rotate the two differently.
     """
     prefix = "duplex_2up_" if two_up else "duplex_"
     values = []
@@ -362,7 +397,7 @@ def export_settings() -> dict:
         "overlap": overlap(),
         "dpi": get_int("dpi"),
         "auto_number": get_bool("auto_number"),
-        "two_up": get_bool("two_up") and page_format() in TWO_UP_PAPER,
+        "print_mode": (print_mode() or (0,))[0],
         "render_cache": get_bool("render_cache"),
         "mirror_back": get_bool("mirror_back"),
         "overview_basemap": str(get_setting("overview_basemap") or "opentopomap"),
