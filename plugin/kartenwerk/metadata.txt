@@ -27,6 +27,7 @@ changelog=
     - Printer margin setting (5/4/3 mm) and a more compact bottom border: bigger map
     - Locator marks where a large series continues; overview page explains the dashed lines
     - Scale is a number field: any value from 1:5 000 to 1:100 000 (rounded to 500)
+    - Option to print the aerial back normally oriented instead of mirrored
     - Overview page shows a miniature map (OpenTopoMap by default, colour of outlines selectable); the sheet list always fits
     2.1.0
     - Code released into the public domain (Unlicense); map data keeps its providers' licences (NOTICE.md)

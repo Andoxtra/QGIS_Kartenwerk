@@ -233,6 +233,8 @@ def export_sheets(
     back = sources.resolve(project, sources.IMAGERY, settings["back_basemap"], bbox, zone, hemisphere)
     ext = {side: ".jpg" if settings[f"{side}_format"] == "JPEG" else ".png" for side in layout.SIDES}
 
+    mirror_back = bool(settings.get("mirror_back", True))
+
     # The user's own layers (e.g. a GPX route), stored per project.
     overlay_layers, missing_overlays = [], []
     for layer_id in config.project_overlays(project):
@@ -240,7 +242,9 @@ def export_sheets(
         (overlay_layers if layer is not None else missing_overlays).append(layer or layer_id)
     side_overlays = {
         "front": (overlay_layers, True),
-        "back": (overlay_layers if config.project_overlays_on_back(project) else [], False),
+        # Labels on a mirrored back would be mirrored too, so they are left out there.
+        "back": (overlay_layers if config.project_overlays_on_back(project) else [],
+                 not mirror_back),
     }
 
     out_dir = Path(settings["output_dir"]).expanduser()
@@ -271,7 +275,8 @@ def export_sheets(
             neighbour = grid.neighbour_info(grid_layer, job["sheet"], lookup)
             job["neighbour"] = neighbour
             job["info"] = {**_north_info(job["extent"], utm), "extent": job["extent"],
-                           "sheets": sheets, "date": print_date, "run": run}
+                           "sheets": sheets, "date": print_date, "run": run,
+                           "mirror_back": mirror_back}
             job["text"] = {side: settings[f"{side}_attribution"].strip() or job["attribution"][side]
                            for side in layout.SIDES}
             for side in layout.SIDES:
@@ -332,7 +337,7 @@ def export_sheets(
                             job["futures"].append(pool.submit(cache.store, *to_store))
                         job["futures"].append(pool.submit(
                             render.save_image, image, job["images"][side], jpeg_quality,
-                            mirror=(side == "back")))
+                            mirror=(side == "back" and mirror_back)))
                 except Exception as exc:
                     errors.append(f"{stem}: {exc}")
                     for future in job["futures"]:

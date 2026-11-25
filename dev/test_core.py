@@ -352,6 +352,51 @@ def feature_checks(work: Path):
         check(f"overview list for {n_rows * n_cols} sheets fits ({expected_pages} page(s))",
               pages == expected_pages, pages)
 
+    # --- back side mirrored (default) or normal ------------------------------
+    nb = {"west": {"sheet_id": "32N-R1234C0566", "sheet_no": 6, "sheet_name": None},
+          "east": {"sheet_id": "32N-R1234C0568", "sheet_no": 8, "sheet_name": None}}
+    msheet = {"sheet_id": "32N-R1234C0567", "utm_zone": 32, "hemisphere": "N", "sheet_no": 7,
+              "sheet_name": None, "row": 1234, "col": 567}
+    mimg = config.cache_dir() / "mirror_test.png"
+    render.save_image(QImage(10, 10, QImage.Format_RGB32), mimg)
+    m_extent = QgsRectangle(440_300, 5_320_000, 440_300 + geom.cell_w, 5_320_000 + geom.cell_h)
+    results = {}
+    for mirror in (True, False):
+        lay = layout.ensure_layout(project, force=True)
+        minfo = {"extent": m_extent, "sheets": [msheet], "convergence": 0.5, "grid_magnetic": 2.0,
+                 "year": 2026, "date": "2026-11-25", "mgrs": "32U MU", "mirror_back": mirror,
+                 "run": f"m{mirror}"}
+        for side in layout.SIDES:
+            layout.update_side(lay, side, msheet, mimg, nb, "© Test", minfo)
+        km_x = {side: sorted(round(it.sceneBoundingRect().center().x(), 1) for it in lay.items()
+                             if hasattr(it, "id") and callable(it.id)
+                             and it.id().startswith(f"{side}_km_e") and it.id().endswith("t"))
+                for side in layout.SIDES}
+        results[mirror] = {
+            "km_same": km_x["front"] == km_x["back"],
+            "left": lay.itemById("back_neighbor_left").text(),
+            "title": lay.itemById("back_title").text(),
+            "north": lay.itemById("back_north").text(),
+        }
+    on, off = results[True], results[False]
+    check("mirrored back: km labels mirrored, east neighbour on the left",
+          not on["km_same"] and "08" in on["left"], on["left"][-30:])
+    check("mirrored back: title says mirrored, north block only the arrow",
+          "mirrored" in on["title"] and "magnetic" not in on["north"])
+    check("normal back: km labels like the front, west neighbour on the left",
+          off["km_same"] and "06" in off["left"], off["left"][-30:])
+    check("normal back: title not mirrored, full north block",
+          "mirrored" not in off["title"] and "magnetic" in off["north"])
+    two = QImage(4, 1, QImage.Format_RGB32)
+    two.fill(QColor("white"))
+    two.setPixelColor(0, 0, QColor("black"))
+    for mirror, expected_x in ((True, 3), (False, 0)):
+        path = config.cache_dir() / f"mirror_px_{mirror}.png"
+        render.save_image(two, path, mirror=mirror)
+        loaded = QImage(str(path))
+        dark = [x for x in range(4) if loaded.pixelColor(x, 0).lightness() < 50]
+        check(f"save_image mirror={mirror}", dark == [expected_x], dark)
+
     # --- #5 duplex offset moves every back item, nothing on the front --------
     def item_rects(lay):
         return {it.id(): it.sceneBoundingRect() for it in lay.items()

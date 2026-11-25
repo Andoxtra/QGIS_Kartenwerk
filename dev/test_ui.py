@@ -160,6 +160,11 @@ def main() -> int:
         dlg.overview_color.setColor(QColor("#00a0ff"))
         check("overview colour returned", dlg.values()["overview_color"] == "#00a0ff"
               and dlg.values()["overview_basemap"] == "opentopomap")
+        check("mirror back: default on", dlg.mirror_back.isChecked()
+              and dlg.values()["mirror_back"] is True)
+        dlg.mirror_back.setChecked(False)
+        check("mirror back: off returned", dlg.values()["mirror_back"] is False)
+        dlg.mirror_back.setChecked(True)
         check("printer margin choices", [dlg.margin_combo.itemData(i) for i in
                                          range(dlg.margin_combo.count())] == [5, 4, 3])
         check("dialog values complete", {"overlap", "printer_margin", "two_up", "render_cache",

@@ -14,9 +14,10 @@ A5) at a selectable scale (default 1:15 000), ready for double-sided printing:
   north, the UTM zone and MGRS square, neighbour sheets, a locator diagram,
   attribution and print date; the map itself stays free of text. Your own
   layers, such as a GPX route, can be drawn on top.
-- **Back:** the same extent as aerial imagery, **mirrored horizontally**, so the
-  back can be printed duplex and held up against the light in register with
-  the front.
+- **Back:** the same extent as aerial imagery. By default it is **mirrored
+  horizontally**, so it lies exactly behind the front when the sheet is held up
+  against the light; switch off **Mirror the back side** to print it normally
+  oriented, easier to read on its own.
 - **Selection:** draw a work area, generate a sheet grid buffered by one cell,
   then pick the sheets you actually want to print.
 - **Worldwide:** coordinates are always metric WGS 84 / UTM with the zone chosen
@@ -179,6 +180,7 @@ count.
 | Resolution (dpi) | `300` | Render and PDF resolution. |
 | Front/Back format | `PNG` | `PNG` (lossless) or `JPEG` (faster, smaller). |
 | JPEG quality | `92` | 50–100. |
+| Mirror the back side | on | On: the aerial back is mirrored left↔right and lines up with the front when held against the light. Off: the back is printed normally oriented, like a second map. |
 | Two sheets per page | off | Also writes a print file with two sheets stacked on the next larger paper (A5 → A4, A4 → A3, A3 → A2) with cut marks. Not available for A2. |
 | Duplex offset | 0 / 0 mm | Moves all back-side content to compensate a printer's duplex shift; separate values for the sheet PDFs and the two-per-page file. See [Printing](#printing). |
 
@@ -332,11 +334,17 @@ sheet, switch to the neighbour once you cross the dashed line. They are not
 cut lines. With **Sheet overlap: None** they disappear and the sheets meet
 exactly at the frame.
 
-The back image (basemap and grid lines) is flipped in memory with
-`QImage.mirrored(True, False)` before it is saved; all border text is drawn
-unflipped, so it stays readable. On the back the left/right neighbours, the
+**Mirrored back (default):** the back image (basemap and grid lines) is flipped
+in memory with `QImage.mirrored(True, False)` before it is saved; all border
+text is drawn unflipped, so it stays readable. The left/right neighbours, the
 easting labels and the locator are mirrored to match the image; the north block
-shows only the arrow, since angles measured on a mirrored image are reversed.
+shows only the arrow, since angles measured on a mirrored image are reversed,
+and overlay labels are left out on the back.
+
+**Normal back** (Settings → Printing → Mirror the back side: off): the back is
+laid out exactly like the front, just with the aerial image, including the full
+north block and overlay labels. The duplex offset still applies, so the frames
+of front and back line up.
 
 ---
 

@@ -260,6 +260,8 @@ def _defaults() -> dict:
         "printer_margin": DEFAULT_PRINTER_MARGIN,
         "two_up": False,
         "render_cache": True,
+        # Mirror the back so it lines up with the front when held against the light.
+        "mirror_back": True,
         # Overview page: map behind the sheet diagram ("none", catalog key, "layer:<name>")
         # and the colour of sheet outlines/numbers on it.
         "overview_basemap": "opentopomap",
@@ -362,6 +364,7 @@ def export_settings() -> dict:
         "auto_number": get_bool("auto_number"),
         "two_up": get_bool("two_up") and page_format() in TWO_UP_PAPER,
         "render_cache": get_bool("render_cache"),
+        "mirror_back": get_bool("mirror_back"),
         "overview_basemap": str(get_setting("overview_basemap") or "opentopomap"),
         "overview_color": str(get_setting("overview_color") or "#c8005a"),
         "open_folder": get_bool("open_folder"),

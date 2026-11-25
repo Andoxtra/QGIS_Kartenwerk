@@ -144,8 +144,8 @@ class SettingsDialog(QDialog):
         self.overlay_list.setToolTip("Your own vector layers (e.g. a GPX route or waypoints), "
                                      "drawn on top of the map with their QGIS style.")
         self._populate_overlays(config.project_overlays())
-        self.overlays_back = QCheckBox("Also draw them on the back (without labels, which "
-                                       "would be mirrored)")
+        self.overlays_back = QCheckBox("Also draw them on the back (on a mirrored back "
+                                       "without labels)")
         self.overlays_back.setChecked(config.project_overlays_on_back())
 
         form = QFormLayout()
@@ -201,6 +201,14 @@ class SettingsDialog(QDialog):
         self.jpeg_quality.setSuffix(" %")
         self.jpeg_quality.setValue(config.get_int("jpeg_quality"))
 
+        self.mirror_back = QCheckBox("Mirror the back side (lines up with the front when held "
+                                     "against the light)")
+        self.mirror_back.setChecked(config.get_bool("mirror_back"))
+        self.mirror_back.setToolTip(
+            "On: the aerial image on the back is mirrored left↔right, so its features lie exactly "
+            "behind the same features on the front.\nOff: the back shows the aerial image "
+            "normally oriented, easier to read on its own.")
+
         self.two_up = QCheckBox()
         self.two_up.setChecked(config.get_bool("two_up"))
         self.two_up.setToolTip("Extra PDF for home printers: two sheets stacked on the next larger "
@@ -222,6 +230,7 @@ class SettingsDialog(QDialog):
         form.addRow("Front format", self.front_format)
         form.addRow("Back format", self.back_format)
         form.addRow("JPEG quality", self.jpeg_quality)
+        form.addRow("", self.mirror_back)
         form.addRow("", self.two_up)
         form.addRow("Duplex offset, sheet PDFs",
                     self._row(self.offset_dx, self.offset_dy, labels=("right", "down")))
@@ -492,6 +501,7 @@ class SettingsDialog(QDialog):
             "auto_number": self.auto_number.isChecked(),
             "two_up": self.two_up.isChecked(),
             "render_cache": self.render_cache.isChecked(),
+            "mirror_back": self.mirror_back.isChecked(),
             "overview_basemap": self.overview_combo.currentData() or "opentopomap",
             "overview_color": self.overview_color.color().name(),
             "duplex_dx": self.offset_dx.value(),

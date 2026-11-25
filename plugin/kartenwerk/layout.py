@@ -388,7 +388,7 @@ def _neighbour_html(neighbour: dict | None, arrow: str) -> str:
                  color="#000000" if numbered else GREY)
 
 
-def _title_html(sheet: dict, side: str) -> str:
+def _title_html(sheet: dict, side: str, mirrored: bool | None = None) -> str:
     number = sheet_number_text(sheet)
     name = str(sheet.get("sheet_name") or "").strip()
     sheet_id = html.escape(str(sheet["sheet_id"]))
@@ -400,7 +400,9 @@ def _title_html(sheet: dict, side: str) -> str:
     parts.append(_span(sheet_id, 6.5, color=GREY) if (number or name)
                  else _span(sheet_id, 9, bold=True))
     if side == "back":
-        parts.append(_span("&nbsp;· aerial image, mirrored for duplex", 6.5, color=GREY))
+        mirrored = True if mirrored is None else mirrored
+        note = "aerial image, mirrored for duplex" if mirrored else "aerial image"
+        parts.append(_span(f"&nbsp;· {note}", 6.5, color=GREY))
     return "".join(parts)
 
 
@@ -408,9 +410,10 @@ def _angle_text(value: float) -> str:
     return f"{abs(value):.1f}° {'E' if value >= 0 else 'W'}"
 
 
-def _north_html(side: str, info: dict) -> str:
+def _north_html(side: str, info: dict, mirrored: bool = False) -> str:
+    """North arrow with true/magnetic north; only the arrow on a mirrored page."""
     arrow = _span("▲ N", 10, bold=True)
-    if side == "back":
+    if mirrored:  # angles measured on a mirrored image would point the wrong way
         return arrow
     parts = [f"true N {_angle_text(-info['convergence'])}"]
     if info.get("grid_magnetic") is not None:
@@ -453,7 +456,8 @@ def _remove_items(layout: QgsPrintLayout, prefix: str) -> None:
             layout.removeLayoutItem(item)
 
 
-def _add_km_labels(layout, slot: Slot, extent, geom: config.PageGeometry) -> None:
+def _add_km_labels(layout, slot: Slot, extent, geom: config.PageGeometry,
+                   mirrored: bool = False) -> None:
     """Kilometre labels in the border at every 1 km grid line (rebuilt per sheet)."""
     p = f"{slot.prefix}km_"
     page, y0 = slot.page, slot.y0
@@ -467,7 +471,7 @@ def _add_km_labels(layout, slot: Slot, extent, geom: config.PageGeometry) -> Non
     i = 0
     while e <= extent.xMaximum():
         x = geom.map_x + (e - extent.xMinimum()) * sx
-        if slot.side == "back":  # the back image is mirrored left↔right
+        if mirrored:  # the mirrored back image runs right↔left
             x = geom.map_x + geom.map_w - (x - geom.map_x)
         w = u(8.0)
         if x - w / 2 >= safe and x + w / 2 <= geom.page_w - safe:
@@ -598,26 +602,28 @@ def update_side(
     picture.setPicturePath(str(image_path))
     picture.refreshPicture()
 
-    layout.itemById(p + "title").setText(_title_html(sheet, side))
-    layout.itemById(p + "north").setText(_north_html(side, info))
+    # A mirrored back (default) lines up with the front when held against the light.
+    mirrored = side == "back" and bool(info.get("mirror_back", True))
+    layout.itemById(p + "title").setText(_title_html(sheet, side, mirrored))
+    layout.itemById(p + "north").setText(_north_html(side, info, mirrored))
     layout.itemById(p + "coord").setText(_coord_html(sheet, info))
     layout.itemById(p + "corner").setText(_corner_html(extent))
     layout.itemById(p + "source").setText(_source_html(source_text, info["date"]))
     layout.itemById(p + "neighbor_top").setText(_neighbour_html(neighbour.get("north"), "▲"))
     layout.itemById(p + "neighbor_bottom").setText(_neighbour_html(neighbour.get("south"), "▼"))
     # Side labels are rotated to read upwards: ▲ then points left, ▼ points right.
-    # The back is mirrored horizontally, so east and west swap sides there.
+    # On a mirrored back east and west swap sides.
     west, east = neighbour.get("west"), neighbour.get("east")
-    left, right = (west, east) if side == "front" else (east, west)
+    left, right = (east, west) if mirrored else (west, east)
     layout.itemById(p + "neighbor_left").setText(_neighbour_html(left, "▲"))
     layout.itemById(p + "neighbor_right").setText(_neighbour_html(right, "▼"))
 
-    _add_km_labels(layout, slot, extent, geom)
+    _add_km_labels(layout, slot, extent, geom, mirrored)
     _shift(layout, f"{p}km_", slot.dx, slot.dy)
 
     # Locator diagram, right-aligned in its reserved box.
     aspect = geom.cell_w / geom.cell_h
-    image = _locator_image(info["sheets"], sheet, aspect, mirror=(side == "back"))
+    image = _locator_image(info["sheets"], sheet, aspect, mirror=mirrored)
     # Unique name per export run: QGIS caches pictures by path, so a reused name
     # could show a stale image.
     path = config.cache_dir() / f"locator_{info.get('run', '')}{sheet['sheet_id']}_{side}.png"
