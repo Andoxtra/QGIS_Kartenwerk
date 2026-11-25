@@ -134,7 +134,10 @@ def main() -> int:
         dlg.offset_dx.setValue(9.0)
         check("duplex offset limited to ±5 mm", dlg.offset_dx.value() == 5.0, dlg.offset_dx.value())
         values = dlg.values()
-        check("dialog values complete", {"overlap", "two_up", "render_cache", "duplex_dx",
+        check("printer margin choices", [dlg.margin_combo.itemData(i) for i in
+                                         range(dlg.margin_combo.count())] == [5, 4, 3])
+        check("dialog values complete", {"overlap", "printer_margin", "two_up", "render_cache",
+                                         "duplex_dx",
                                          "duplex_dy", "duplex_2up_dx", "duplex_2up_dy"}
               <= set(values), sorted(values))
         check("auto note names the national sources", "TopPlusOpen" in dlg.auto_note.text(),

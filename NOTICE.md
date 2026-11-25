@@ -44,7 +44,7 @@ What this means for the maps you make:
 
 ## The example maps in `examples/`
 
-`examples/Sheet_05_32N-R3034C0167.pdf` is an export made with this plugin, and
+`examples/Sheet_05_32N-R2985C0167.pdf` is an export made with this plugin, and
 `examples/example_preview.jpg` is an image of it. Both contain third-party map
 content, so they are **not** public domain:
 

@@ -77,6 +77,15 @@ def unit_checks():
         {"row": 10, "col": 5, "sheet_id": "south"},
         {"row": 11, "col": 5, "sheet_id": "north"},
     ]
+    big = [{"row": r, "col": c, "sheet_id": f"{r}-{c}"} for r in range(12) for c in range(12)]
+    check("locator 12×12, middle sheet: series continues on all sides",
+          layout.locator_hints(big, {"row": 6, "col": 6}) == {"north", "south", "west", "east"},
+          sorted(layout.locator_hints(big, {"row": 6, "col": 6})))
+    check("locator 12×12, NW corner sheet: continues south and east only",
+          layout.locator_hints(big, {"row": 11, "col": 0}) == {"south", "east"},
+          sorted(layout.locator_hints(big, {"row": 11, "col": 0})))
+    check("locator 3×3: no marks", layout.locator_hints(
+        [{"row": r, "col": c} for r in range(3) for c in range(3)], {"row": 1, "col": 1}) == set())
     cells = layout.overview_cells(sheets)
     top = [c for c in cells if c[1] == 0][0][2]
     check("overview: north row on top", top["sheet_id"] == "north")
@@ -84,7 +93,7 @@ def unit_checks():
 
 
 def safe_zone_violations(layout_):
-    """Items whose box comes closer than config.SAFE_MM to the paper edge."""
+    """Items whose box comes closer than the printer margin to the paper edge."""
     from qgis.core import QgsLayoutItemPage
     pages = layout_.pageCollection()
     bad = []
@@ -95,7 +104,7 @@ def safe_zone_violations(layout_):
         page = pages.page(item.page())
         top = rect.top() - page.pos().y()
         size = page.pageSize()
-        s = config.SAFE_MM - 0.01
+        s = config.safe_mm() - 0.01
         if rect.left() < s or rect.right() > size.width() - s or top < s \
                 or top + rect.height() > size.height() - s:
             bad.append((item.id(), round(rect.left(), 1), round(top, 1),
@@ -120,7 +129,7 @@ def layout_checks(fmt, scale_denom):
     from qgis.PyQt.QtCore import QSize
     from qgis.core import QgsLayoutExporter
     from kartenwerk import render
-    print(f"== layout {fmt} 1:{scale_denom}", flush=True)
+    print(f"== layout {fmt} 1:{scale_denom}, printer margin {config.safe_mm():g} mm", flush=True)
     config.set_setting("page_format", fmt)
     config.set_setting("scale", scale_denom)
     project = QgsProject.instance()
@@ -140,13 +149,14 @@ def layout_checks(fmt, scale_denom):
             "year": 2026, "date": "2026-11-25"}
     lay = layout.ensure_layout(project, force=True)
     image, _ = render.render_image(extent, [], utm, 254, cell=None)
-    img_path = config.cache_dir() / f"grid_only_{fmt}_{scale_denom}.png"  # unique: QGIS caches by path
+    # unique per case: QGIS caches pictures by path
+    img_path = config.cache_dir() / f"grid_only_{fmt}_{scale_denom}_{config.safe_mm():g}.png"
     render.save_image(image, img_path)
     for side in layout.SIDES:
         layout.update_side(lay, side, sheet, img_path, neighbour, "© Test attribution", info)
 
     bad = safe_zone_violations(lay)
-    check(f"{fmt}: all border items inside the {config.SAFE_MM} mm safe zone", not bad, bad[:5])
+    check(f"{fmt}: all border items inside the {config.safe_mm():g} mm printer margin", not bad, bad[:5])
 
     page = QgsLayoutExporter(lay).renderPageToImage(0, QSize(), 254)  # 10 px per mm
     px = page.width() / geom.page_w
@@ -178,7 +188,7 @@ def layout_checks(fmt, scale_denom):
               and slots[1][1].page == slots[1][0].page + 1)
 
     metres, length = layout.scale_bar_length(geom)
-    bar_row = int((geom.bottom + 4.95) * px)
+    bar_row = int((geom.bottom + 2.85 * geom.text_scale) * px)  # middle of the scale bar
     bar = [page.pixelColor(x, bar_row).lightness()
            for x in range(int((geom.map_x - 1) * px), int((geom.map_x + length + 1) * px))]
     dark = [i for i, v in enumerate(bar) if v < 100]
@@ -406,8 +416,11 @@ def main(selected):
     config.set_cache_dir(work)
     legacy_migration(work)
     feature_checks(work)
-    for fmt, scale_denom in (("A5", 15000), ("A2", 25000), ("A4", 10000)):
+    for fmt, scale_denom, margin in (("A5", 15000, 5), ("A2", 25000, 5), ("A4", 10000, 5),
+                                     ("A5", 15000, 3), ("A3", 20000, 4)):
+        config.set_setting("printer_margin", margin)
         layout_checks(fmt, scale_denom)
+    config.set_setting("printer_margin", 5)
 
     config.set_setting("page_format", "A5")
     config.set_setting("scale", 25000)

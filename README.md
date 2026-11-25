@@ -3,7 +3,7 @@
 ![Example sheet: topographic front and mirrored aerial back](examples/example_preview.jpg)
 
 *Example sheet (A5, 1:15 000, Black Forest): front and mirrored back.
-[PDF](examples/Sheet_05_32N-R3034C0167.pdf) · map data © BKG (CC BY 4.0) and
+[PDF](examples/Sheet_05_32N-R2985C0167.pdf) · map data © BKG (CC BY 4.0) and
 © LGL BW (dl-de/by-2-0).*
 
 A QGIS plugin that turns a work area into landscape map sheets (A2, A3, A4 or
@@ -141,7 +141,7 @@ the plugin appears under **Plugins → Kartenwerk** and as a toolbar and dock.
 3. **Generate grid** – creates sheet cells in the work area's UTM zone,
    buffered by one cell. The project CRS switches to that zone so the grid
    appears square. The cell size follows page format, scale and overlap (e.g.
-   2.65 × 1.75 km for A5 at 1:15 000 with 5 % overlap).
+   2.65 × 1.78 km for A5 at 1:15 000 with 5 % overlap).
 4. **Select sheets** – click cells; use `Ctrl` / `Shift` for several.
 5. Optional: **Number sheets** – numbers the selected sheets north → south,
    west → east. **Name sheet** – gives one selected sheet a name (e.g. a
@@ -173,6 +173,7 @@ count.
 | Setting | Default | Description |
 |---|---|---|
 | Output folder | `<project folder>/output` | Leave empty to follow the project. |
+| Printer margin | `5 mm` | Nothing is printed closer to the paper edge. 4 or 3 mm give a bigger map if your printer can print that close (test with one sheet). Regenerate the grid after changing it. |
 | Resolution (dpi) | `300` | Render and PDF resolution. |
 | Front/Back format | `PNG` | `PNG` (lossless) or `JPEG` (faster, smaller). |
 | JPEG quality | `92` | 50–100. |
@@ -196,7 +197,7 @@ settings, overlays in the project.
 
 ## Output
 
-**Example:** [`examples/Sheet_05_32N-R3034C0167.pdf`](examples/Sheet_05_32N-R3034C0167.pdf)
+**Example:** [`examples/Sheet_05_32N-R2985C0167.pdf`](examples/Sheet_05_32N-R2985C0167.pdf)
 is one exported sheet (Black Forest, A5, 1:15 000, 300 dpi, 5 % overlap): the
 TopPlusOpen topographic map on the front and the DOP20 aerial image, mirrored,
 on the back. Its map content is licensed by BKG and LGL BW, see
@@ -225,22 +226,23 @@ sheet.
 
 ## Sheet geometry
 
-Nothing is printed closer than 5 mm to the paper edge, the area most printers
-cannot reach. On A5 the white border is 12 mm left and right (equal, so the
-mirrored back registers with the front), 11 mm at the top and 14 mm at the
-bottom. On larger pages the border text and the border inside the 5 mm safe
-zone grow with the page (A4 × 1.15, A3 × 1.35, A2 × 1.6), so they stay in
-proportion. One grid cell is the map frame at the chosen scale minus the
-overlap. Example for A5 at 1:15 000 with 5 % overlap:
+Nothing is printed closer to the paper edge than the **printer margin**
+(Settings → Printing; 5 mm by default, the area most printers cannot reach; 4 or
+3 mm give a bigger map on printers that can print closer to the edge). Inside
+it, the border on A5 has lanes of 7 mm left and right (equal, so the mirrored
+back registers with the front), 6 mm at the top and 7 mm at the bottom. On
+larger pages the border text and lanes grow with the page (A4 × 1.15,
+A3 × 1.35, A2 × 1.6), so they stay in proportion. One grid cell is the map
+frame at the chosen scale minus the overlap. A5 at 1:15 000 with 5 % overlap:
 
-| Property | Value |
-|---|---|
-| Page | A5 landscape, 210 × 148 mm |
-| Map frame | 186 × 123 mm |
-| Ground shown per sheet | 2 790 × 1 845 m |
-| Grid step (new ground per sheet) | 2 650.5 × 1 752.75 m |
-| Grid | 1 km = 66.7 mm |
-| Render resolution | 300 dpi → 2 197 × 1 453 px map frame |
+| Printer margin | Map frame | Ground shown per sheet | Grid step (new ground per sheet) | 300 dpi map image |
+|---|---|---|---|---|
+| 5 mm (default) | 186 × 125 mm | 2 790 × 1 875 m | 2 650.5 × 1 781.25 m | 2 197 × 1 476 px |
+| 4 mm | 188 × 127 mm | 2 820 × 1 905 m | 2 679 × 1 809.75 m | 2 220 × 1 500 px |
+| 3 mm | 190 × 129 mm | 2 850 × 1 935 m | 2 707.5 × 1 838.25 m | 2 244 × 1 524 px |
+
+The grid is always 1 km = 66.7 mm at 1:15 000. Changing the printer margin
+changes the cell size, so regenerate the grid afterwards.
 
 ---
 
@@ -293,18 +295,30 @@ The border, from top to bottom:
   the angles from grid north to true north (grid convergence) and to magnetic
   north (declination from NOAA's World Magnetic Model 2025, valid 2025–2030;
   omitted outside that period). The magnetic angle is what a compass user needs.
-- **Km labels** at every 1 km grid line on all four sides, UTM style: small
-  leading digits + bold kilometre, e.g. `⁴36` = E 436 000, `⁵³18` = N 5 318 000.
+- **Km labels** at every 1 km grid line: eastings along the top, northings on
+  both sides, UTM style: small leading digits + bold kilometre, e.g. `⁴36` =
+  E 436 000, `⁵³18` = N 5 318 000.
 - **Sides:** west/east neighbours, rotated to read upwards. A numbered
   neighbour shows its number (`▲ 04`), an unselected one its short ID in grey,
   a missing one `—`.
 - **Bottom:** scale bar (stays correct even if the page is printed scaled) and
   scale; south neighbour; UTM zone and MGRS 100 km square (e.g. `32U MU`, or
   `32U MU / NU` when a sheet spans two squares — left out in the Norway and
-  Svalbard MGRS exception zones); a locator diagram showing the sheet within
-  the series; attribution, print date and the SW corner of the printed map.
-- A thin frame line surrounds the map; with overlap, dashed lines inside the
-  map mark where the neighbouring sheets begin.
+  Svalbard MGRS exception zones); a locator diagram showing the sheet (dark
+  blue) within the exported series (light blue); attribution, print date and
+  the SW corner of the printed map. For series larger than 8 × 8 sheets the
+  locator shows the 8 × 8 sheets around the current one, and small grey
+  triangles on its sides mark where the series continues.
+- A thin black frame line surrounds the map.
+
+**What the dashed red lines in the map mean:** with sheet overlap switched on
+(default 5 %), each sheet shows a little more ground than its own grid cell, so
+paths near an edge also appear on the next sheet. The dashed red lines mark
+**where the neighbouring sheet begins**; the narrow strip between a dashed line
+and the black frame is printed on the neighbour as well. When you walk off a
+sheet, switch to the neighbour once you cross the dashed line. They are not
+cut lines. With **Sheet overlap: None** they disappear and the sheets meet
+exactly at the frame.
 
 The back image (basemap and grid lines) is flipped in memory with
 `QImage.mirrored(True, False)` before it is saved; all border text is drawn

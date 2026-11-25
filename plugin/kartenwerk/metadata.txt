@@ -24,6 +24,8 @@ changelog=
     - Render cache: re-exporting a sheet downloads nothing (never for Esri imagery)
     - Sheet numbers and names survive regenerating the grid; auto-numbering only fills gaps
     - Settings dialog in tabs (Map, Printing, Advanced)
+    - Printer margin setting (5/4/3 mm) and a more compact bottom border: bigger map
+    - Locator marks where a large series continues; overview page explains the dashed lines
     2.1.0
     - Code released into the public domain (Unlicense); map data keeps its providers' licences (NOTICE.md)
     - Print file with two sheets per page on the next larger paper (A5 on A4, A4 on A3, A3 on A2)

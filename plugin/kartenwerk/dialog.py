@@ -142,6 +142,15 @@ class SettingsDialog(QDialog):
         browse = QPushButton("…")
         browse.clicked.connect(self._browse)
 
+        self.margin_combo = QComboBox()
+        for mm, text in config.PRINTER_MARGINS.items():
+            self.margin_combo.addItem(text, mm)
+        self.margin_combo.setToolTip("Nothing is printed closer than this to the paper edge. "
+                                     "Smaller = bigger map, but text may be cut off on printers "
+                                     "that cannot print that close. Regenerate the grid after "
+                                     "changing it.")
+        self._select_data(self.margin_combo, int(config.safe_mm()))
+
         self.dpi_spin = QSpinBox()
         self.dpi_spin.setRange(150, 600)
         self.dpi_spin.setSingleStep(50)
@@ -178,6 +187,7 @@ class SettingsDialog(QDialog):
 
         form = QFormLayout()
         form.addRow("Output folder", self._row(self.output_edit, browse))
+        form.addRow("Printer margin", self.margin_combo)
         form.addRow("Resolution (dpi)", self.dpi_spin)
         form.addRow("Front format", self.front_format)
         form.addRow("Back format", self.back_format)
@@ -407,6 +417,7 @@ class SettingsDialog(QDialog):
             "page_format": self.page_combo.currentData(),
             "scale": int(self.scale_combo.currentData()),
             "overlap": int(self.overlap_combo.currentData()),
+            "printer_margin": int(self.margin_combo.currentData()),
             "front_basemap": self.front_combo.currentData() or config.AUTO,
             "back_basemap": self.back_combo.currentData() or config.AUTO,
             "front_format": self.front_format.currentData(),

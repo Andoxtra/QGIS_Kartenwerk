@@ -1,7 +1,7 @@
 """Print layout (page 1: front topo, page 2: mirrored aerial back) and the overview sheet.
 
 The map itself is kept free of text. The white border carries, inside the
-printer-safe zone (config.SAFE_MM from the paper edge):
+printer margin (config.safe_mm() from the paper edge):
 
     top     sheet number + id · north neighbour · north arrow with grid/true/magnetic north
     sides   km grid labels (northings) · west/east neighbours (rotated, reading upwards)
@@ -16,8 +16,8 @@ import math
 import uuid
 from pathlib import Path
 
-from qgis.PyQt.QtCore import QRect, QRectF, Qt
-from qgis.PyQt.QtGui import QColor, QFont, QImage, QPainter, QPen
+from qgis.PyQt.QtCore import QPointF, QRect, QRectF, Qt
+from qgis.PyQt.QtGui import QColor, QFont, QImage, QPainter, QPen, QPolygonF
 from qgis.core import (
     QgsFillSymbol,
     QgsLayoutExporter,
@@ -36,7 +36,7 @@ from qgis.core import (
 from . import config, crs as crs_mod
 
 LAYOUT_NAME = "Kartenwerk"
-LAYOUT_VERSION = "5"  # bump when the border design changes, so saved layouts are rebuilt
+LAYOUT_VERSION = "6"  # bump when the border design changes, so saved layouts are rebuilt
 LEGACY_LAYOUTS = ("Vorderseite", "Rueckseite")
 SIDES = ("front", "back")  # page 0, page 1
 _MM = QgsUnitTypes.LayoutMillimeters
@@ -186,7 +186,7 @@ def _add_scale_bar(layout, slot: Slot, geom: config.PageGeometry) -> None:
     segments = 4
     seg = length / segments
     for i in range(segments):
-        _rect(layout, f"{p}sb_seg{i}", x0 + i * seg, bottom + u(4.4), seg, u(1.1), page,
+        _rect(layout, f"{p}sb_seg{i}", x0 + i * seg, bottom + u(2.3), seg, u(1.1), page,
               "black" if i % 2 == 0 else "white", stroke=0.15 * _K)
     for i, frac in enumerate((0.0, 0.5, 1.0)):
         value = metres * frac
@@ -197,14 +197,14 @@ def _add_scale_bar(layout, slot: Slot, geom: config.PageGeometry) -> None:
         else:
             x, align = x0 + length * frac - u(8.0), Qt.AlignCenter
         _label(layout, f"{p}sb_lbl{i}", _span(text, 5, color=GREY),
-               x, bottom + u(2.5), u(16.0), u(1.8), page=page, align=align)
+               x, bottom + u(0.4), u(16.0), u(1.8), page=page, align=align)
     _label(layout, f"{p}scale", _span(config.format_scale(geom.scale), 7.5, bold=True),
-           x0 + length + u(8.0), bottom + u(2.9), u(22.0), u(3.2), page=page, align=Qt.AlignLeft)
+           x0 + length + u(8.0), bottom + u(0.8), u(22.0), u(3.2), page=page, align=Qt.AlignLeft)
 
 
 def _add_side(layout: QgsPrintLayout, slot: Slot, geom: config.PageGeometry) -> None:
     p, page, y0 = slot.prefix, slot.page, slot.y0
-    safe = config.SAFE_MM
+    safe = config.safe_mm()
     top = y0 + safe
     bottom = y0 + geom.bottom
     map_y = y0 + geom.map_y
@@ -240,15 +240,15 @@ def _add_side(layout: QgsPrintLayout, slot: Slot, geom: config.PageGeometry) -> 
 
     # --- bottom rows -----------------------------------------------------------
     _add_scale_bar(layout, slot, geom)
-    _label(layout, p + "neighbor_bottom", "", geom.page_w / 2 - u(20), bottom + u(2.6), u(40),
+    _label(layout, p + "neighbor_bottom", "", geom.page_w / 2 - u(20), bottom + u(0.5), u(40),
            u(3.8), page=page)
     coord_right = geom.right - u(_LOCATOR_MAX_W) - u(2.0)
     # Row B right: UTM zone + MGRS square; row C: attribution left, SW corner right.
-    _label(layout, p + "coord", "", coord_right - u(40), bottom + u(2.8), u(40), u(2.8),
+    _label(layout, p + "coord", "", coord_right - u(40), bottom + u(0.7), u(40), u(2.8),
            page=page, align=Qt.AlignRight)
-    _label(layout, p + "corner", "", coord_right - u(50), bottom + u(6.6), u(50), u(2.3),
+    _label(layout, p + "corner", "", coord_right - u(50), bottom + u(4.5), u(50), u(2.3),
            page=page, align=Qt.AlignRight)
-    _label(layout, p + "source", "", geom.map_x, bottom + u(6.6),
+    _label(layout, p + "source", "", geom.map_x, bottom + u(4.5),
            coord_right - u(52) - geom.map_x, u(2.3), page=page, align=Qt.AlignLeft)
 
     locator = QgsLayoutItemPicture(layout)
@@ -256,7 +256,7 @@ def _add_side(layout: QgsPrintLayout, slot: Slot, geom: config.PageGeometry) -> 
     locator.setResizeMode(QgsLayoutItemPicture.Stretch)
     layout.addLayoutItem(locator)
     locator.attemptResize(QgsLayoutSize(u(_LOCATOR_H), u(_LOCATOR_H), _MM))
-    locator.attemptMove(QgsLayoutPoint(geom.right - u(_LOCATOR_H), bottom + u(2.4), _MM),
+    locator.attemptMove(QgsLayoutPoint(geom.right - u(_LOCATOR_H), bottom + u(0.3), _MM),
                         True, False, page)
     _shift(layout, p, slot.dx, slot.dy)
 
@@ -353,7 +353,7 @@ def two_up_layout(project: QgsProject, count: int,
     # Cut marks on the front pages, inside the printable area at both paper edges.
     mark = u(6.0)
     for pair in range(pairs):
-        for x in (config.SAFE_MM, paper_w - config.SAFE_MM - mark):
+        for x in (config.safe_mm(), paper_w - config.safe_mm() - mark):
             _rect(layout, f"cut{pair}_{int(x)}", x, half - 0.1, mark, 0.2, 2 * pair, "black",
                   stroke=0)
     return layout, slots
@@ -458,7 +458,7 @@ def _add_km_labels(layout, slot: Slot, extent, geom: config.PageGeometry) -> Non
     p = f"{slot.prefix}km_"
     page, y0 = slot.page, slot.y0
     _remove_items(layout, p)
-    safe = config.SAFE_MM
+    safe = config.safe_mm()
     spacing = config.GRID_SPACING_M
     sx = geom.map_w / extent.width()
     sy = geom.map_h / extent.height()
@@ -472,10 +472,9 @@ def _add_km_labels(layout, slot: Slot, extent, geom: config.PageGeometry) -> Non
         w = u(8.0)
         if x - w / 2 >= safe and x + w / 2 <= geom.page_w - safe:
             text = _km_html(e)
+            # Eastings are labelled along the top only (the bottom row holds the scale bar).
             _label(layout, f"{p}e{i}t", text, x - w / 2,
                    y0 + geom.map_y - u(_KM_ROW_H) - u(0.2), w, u(_KM_ROW_H), page=page)
-            _label(layout, f"{p}e{i}b", text, x - w / 2, y0 + geom.bottom + u(0.3), w,
-                   u(_KM_ROW_H), page=page)
         e += spacing
         i += 1
 
@@ -488,7 +487,7 @@ def _add_km_labels(layout, slot: Slot, extent, geom: config.PageGeometry) -> Non
         h = u(2.4)
         # Keep clear of the rotated side neighbours and of the page corners.
         if abs(y - mid) > u(_SIDE_LABEL_LEN / 2 - 6.0) and y - h / 2 >= geom.map_y - u(1.0) \
-                and y + h / 2 <= geom.bottom + u(1.0):
+                and y + h / 2 <= geom.bottom + u(0.2):
             text = _km_html(n)
             _label(layout, f"{p}n{i}l", text, safe, y0 + y - h / 2, lane_w, h, page=page,
                    align=Qt.AlignRight)
@@ -513,19 +512,40 @@ def locator_window(sheets: list[dict], current: dict, max_cells: int = 8):
     return r0, r1, c0, c1
 
 
+def locator_hints(sheets: list[dict], current: dict) -> set[str]:
+    """Sides ('north', 'south', 'west', 'east') where the series continues beyond the window."""
+    r0, r1, c0, c1 = locator_window(sheets, current)
+    rows = [int(s["row"]) for s in sheets]
+    cols = [int(s["col"]) for s in sheets]
+    hints = set()
+    if r1 < max(rows):
+        hints.add("north")
+    if r0 > min(rows):
+        hints.add("south")
+    if c0 > min(cols):
+        hints.add("west")
+    if c1 < max(cols):
+        hints.add("east")
+    return hints
+
+
 def _locator_image(sheets: list[dict], current: dict, aspect: float, mirror: bool) -> QImage:
     r0, r1, c0, c1 = locator_window(sheets, current)
+    hints = locator_hints(sheets, current)
     selected = {(int(s["row"]), int(s["col"])) for s in sheets}
     cw = 40
     ch = max(10, int(round(cw / aspect)))
     ncols, nrows = c1 - c0 + 1, r1 - r0 + 1
-    image = QImage(ncols * cw + 4, nrows * ch + 4, QImage.Format_ARGB32_Premultiplied)
+    pad = 24 if hints else 2  # room for the "series continues" marks
+    gw, gh = ncols * cw, nrows * ch
+    image = QImage(gw + 2 * pad, gh + 2 * pad, QImage.Format_ARGB32_Premultiplied)
     image.fill(QColor(0, 0, 0, 0))
     painter = QPainter(image)
+    painter.setRenderHint(QPainter.Antialiasing, True)
     for row in range(r1, r0 - 1, -1):  # north at the top
         for col in range(c0, c1 + 1):
-            x = 2 + (col - c0) * cw
-            y = 2 + (r1 - row) * ch
+            x = pad + (col - c0) * cw
+            y = pad + (r1 - row) * ch
             if (row, col) == (int(current["row"]), int(current["col"])):
                 fill, pen = QColor(25, 70, 140), QColor(25, 70, 140)
             elif (row, col) in selected:
@@ -535,6 +555,19 @@ def _locator_image(sheets: list[dict], current: dict, aspect: float, mirror: boo
             painter.setPen(QPen(pen, 2))
             painter.setBrush(fill)
             painter.drawRect(QRectF(x + 1, y + 1, cw - 2, ch - 2))
+    # Small grey triangles where the series continues beyond the window.
+    painter.setPen(Qt.NoPen)
+    painter.setBrush(QColor(110, 110, 110))
+    t = 16.0
+    mx, my = pad + gw / 2.0, pad + gh / 2.0
+    marks = {
+        "north": [(mx - t, pad - 3), (mx + t, pad - 3), (mx, pad - 3 - t)],
+        "south": [(mx - t, pad + gh + 3), (mx + t, pad + gh + 3), (mx, pad + gh + 3 + t)],
+        "west": [(pad - 3, my - t), (pad - 3, my + t), (pad - 3 - t, my)],
+        "east": [(pad + gw + 3, my - t), (pad + gw + 3, my + t), (pad + gw + 3 + t, my)],
+    }
+    for side in hints:
+        painter.drawPolygon(QPolygonF([QPointF(x, y) for x, y in marks[side]]))
     painter.end()
     return image.mirrored(True, False) if mirror else image
 
@@ -598,7 +631,7 @@ def update_side(
     locator.refreshPicture()
     locator.attemptResize(QgsLayoutSize(w, h, _MM))
     locator.attemptMove(
-        QgsLayoutPoint(geom.right - w, slot.y0 + geom.bottom + u(2.4) + (u(_LOCATOR_H) - h) / 2,
+        QgsLayoutPoint(geom.right - w, slot.y0 + geom.bottom + u(0.3) + (u(_LOCATOR_H) - h) / 2,
                        _MM), True, False, slot.page)
     _shift(layout, p + "locator", slot.dx, slot.dy)
     return [path]
@@ -610,7 +643,7 @@ def update_side(
 def _calibration_pages(layout: QgsPrintLayout, w: float, h: float, page0: int, title: str) -> None:
     """Front: a cross at the paper centre and a 100 mm scale check. Back: mm rulers."""
     cx, cy = w / 2.0, h / 2.0
-    safe = config.SAFE_MM + 2.0
+    safe = config.safe_mm() + 2.0
     front, back = page0, page0 + 1
     # ---- front
     _label(layout, f"cal{front}_title", _span(f"Duplex test – FRONT · {title}", 11, bold=True),
@@ -851,11 +884,18 @@ def export_overview(
     legend_y = diag_y + diag_h + 3.0
     _label(
         layout, "overview_legend", _overview_legend_html(sheets),
-        margin, legend_y, geom.page_w - 2 * margin, (geom.page_h - margin - u(3.0)) - legend_y,
+        margin, legend_y, geom.page_w - 2 * margin, (geom.page_h - margin - u(5.5)) - legend_y,
         align=Qt.AlignLeft, valign=Qt.AlignTop,
     )
     _label(layout, "overview_date", _span(f"Printed {today()}", 5, color=GREY),
            margin, geom.page_h - margin - u(2.5), u(60), u(2.5), align=Qt.AlignLeft)
+    if geom.overlap:
+        _label(layout, "overview_overlap", _span(
+            f"Dashed red lines in the maps: where the neighbouring sheet begins. Sheets overlap "
+            f"by {geom.overlap} %, so the strip outside a dashed line is printed on the "
+            "neighbour too.", 5, color=GREY),
+            margin + u(62), geom.page_h - margin - u(5.0), geom.page_w - 2 * margin - u(62),
+            u(5.0), align=Qt.AlignRight, valign=Qt.AlignBottom)
 
     try:
         return export_pdf(layout, Path(out_path), dpi)

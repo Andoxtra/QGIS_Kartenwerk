@@ -362,6 +362,7 @@ class KartenwerkPlugin:
         old_format = config.page_format()
         old_scale = config.scale()
         old_overlap = config.overlap()
+        old_margin = config.safe_mm()
         values = dlg.values()
         for key, value in values.items():
             config.set_setting(key, value)
@@ -369,11 +370,11 @@ class KartenwerkPlugin:
         if (overlay_ids, overlays_back) != (config.project_overlays(),
                                             config.project_overlays_on_back()):
             config.set_project_overlays(overlay_ids, overlays_back)  # marks the project as changed
-        if (values["page_format"], int(values["scale"]), int(values["overlap"])) != \
-                (old_format, old_scale, old_overlap):
+        if (values["page_format"], int(values["scale"]), int(values["overlap"]),
+                float(values["printer_margin"])) != (old_format, old_scale, old_overlap, old_margin):
             layout.ensure_layout(QgsProject.instance())
             self.iface.messageBar().pushWarning(
-                "Kartenwerk", "Page format, scale or overlap changed. Please run 'Generate grid' again."
+                "Kartenwerk", "Page format, scale, overlap or printer margin changed. Please run 'Generate grid' again."
             )
         else:
             self.iface.messageBar().pushSuccess("Kartenwerk", "Settings saved.")

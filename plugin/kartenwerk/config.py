@@ -11,15 +11,17 @@ from qgis.core import QgsApplication, QgsProject, QgsSettings
 # ---------------------------------------------------------------------------
 # Page / scale geometry (all layout units are millimetres)
 # ---------------------------------------------------------------------------
-# Most printers cannot print the outer ~4–5 mm of the paper. Nothing is placed
-# closer than this to the paper edge.
-SAFE_MM = 5.0
-# White border around the map frame on A5 (larger formats scale the part
-# inside the safe zone, see TEXT_SCALE). Left and right must be equal: the back
-# is mirrored about the vertical axis and has to register with the front.
-MARGIN_SIDE_MM = 12.0  # safe zone + northing km labels / side neighbours
-MARGIN_TOP_MM = 11.0  # safe zone + title row + easting km labels
-MARGIN_BOTTOM_MM = 14.0  # safe zone + km labels + scale bar row + attribution row
+# Printer margin: most printers cannot print the outer ~4–5 mm of the paper, so
+# nothing is placed closer than this to the paper edge (setting "printer_margin").
+PRINTER_MARGINS = {5: "5 mm – safe for most printers", 4: "4 mm",
+                   3: "3 mm – printers with small margins, print shops"}
+DEFAULT_PRINTER_MARGIN = 5
+# Border lanes between the printer margin and the map frame on A5 (larger formats
+# scale them, see TEXT_SCALE). Left and right must be equal: the back is mirrored
+# about the vertical axis and has to register with the front.
+LANE_SIDE_MM = 7.0  # northing km labels / side neighbours
+LANE_TOP_MM = 6.0  # title row + easting km labels
+LANE_BOTTOM_MM = 7.0  # scale bar row + attribution row (eastings are labelled at the top)
 DPI = 300
 GRID_SPACING_M = 1000.0
 
@@ -76,6 +78,7 @@ class PageGeometry:
     pad_w: float  # ground metres shown beyond the cell on the left and on the right
     pad_h: float  # … above and below
     text_scale: float  # border text/lane size relative to A5
+    safe: float  # printer margin in mm
 
     @property
     def map_x(self) -> float:
@@ -99,7 +102,7 @@ class PageGeometry:
     def signature(self) -> str:
         """Identifies everything that changes the layout geometry."""
         return (f"{self.name}|{self.scale}|{self.overlap}|{self.margin_side}|"
-                f"{self.margin_top}|{self.margin_bottom}|{SAFE_MM}|{self.text_scale}")
+                f"{self.margin_top}|{self.margin_bottom}|{self.safe}|{self.text_scale}")
 
 
 def page_format() -> str:
@@ -115,6 +118,15 @@ def scale() -> int:
     except (TypeError, ValueError):
         value = DEFAULT_SCALE
     return value if value in SCALES else DEFAULT_SCALE
+
+
+def safe_mm() -> float:
+    """Printer margin in mm (validated): nothing is printed closer to the paper edge."""
+    try:
+        value = int(get_setting("printer_margin"))
+    except (TypeError, ValueError):
+        value = DEFAULT_PRINTER_MARGIN
+    return float(value if value in PRINTER_MARGINS else DEFAULT_PRINTER_MARGIN)
 
 
 def overlap() -> int:
@@ -142,9 +154,10 @@ def page_geometry(name: str | None = None, scale_denom: int | None = None,
     ov = overlap_percent if overlap_percent is not None else overlap()
     page_w, page_h = PAGE_FORMATS[name]
     k = TEXT_SCALE[name]
-    side = SAFE_MM + (MARGIN_SIDE_MM - SAFE_MM) * k
-    top = SAFE_MM + (MARGIN_TOP_MM - SAFE_MM) * k
-    bottom = SAFE_MM + (MARGIN_BOTTOM_MM - SAFE_MM) * k
+    safe = safe_mm()
+    side = safe + LANE_SIDE_MM * k
+    top = safe + LANE_TOP_MM * k
+    bottom = safe + LANE_BOTTOM_MM * k
     map_w = page_w - 2.0 * side
     map_h = page_h - top - bottom
     frame_w = map_w / 1000.0 * s  # ground metres covered by the map frame
@@ -159,6 +172,7 @@ def page_geometry(name: str | None = None, scale_denom: int | None = None,
         cell_w=cell_w, cell_h=cell_h,
         pad_w=(frame_w - cell_w) / 2.0, pad_h=(frame_h - cell_h) / 2.0,
         text_scale=k,
+        safe=safe,
     )
 
 
@@ -236,6 +250,7 @@ def _defaults() -> dict:
         "page_format": DEFAULT_PAGE_FORMAT,
         "scale": DEFAULT_SCALE,
         "overlap": DEFAULT_OVERLAP,
+        "printer_margin": DEFAULT_PRINTER_MARGIN,
         "two_up": False,
         "render_cache": True,
         # Duplex offset of the back side in mm (see duplex_offset()).
