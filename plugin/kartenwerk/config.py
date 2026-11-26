@@ -280,6 +280,10 @@ AUTO = "auto"
 # a hard-coded "UTM 32N"), so they are removed instead of migrated.
 _LEGACY_KEYS = (
     "front_layer", "back_layer", "front_source", "back_source", "topo_style", "imagery",
+    # Mirroring used to be on by default, and the settings dialog stores every value
+    # on OK, so a saved "mirror_back" is not a deliberate choice. Its successor
+    # "mirror_back_v2" starts from the new default (off).
+    "mirror_back",
 )
 
 
@@ -296,7 +300,8 @@ def _defaults() -> dict:
         "print_mode": 0,
         "render_cache": True,
         # Mirror the back so it lines up with the front when held against the light.
-        "mirror_back": False,
+        # Off by default: a normally oriented aerial back is easier to read on its own.
+        "mirror_back_v2": False,
         # Overview page: map behind the sheet diagram ("none", catalog key, "layer:<name>")
         # and the colour of sheet outlines/numbers on it.
         "overview_basemap": "opentopomap",
@@ -374,6 +379,12 @@ def duplex_offset(two_up: bool = False) -> tuple[float, float]:
 
 def remove_legacy_settings() -> None:
     settings = QgsSettings()
+    # "Two sheets per page" (A5 on A4) became print mode 2.
+    two_up = settings.value(f"{_SETTINGS_PREFIX}/two_up")
+    if two_up is not None:
+        if to_bool(two_up) and settings.value(f"{_SETTINGS_PREFIX}/print_mode") is None:
+            settings.setValue(f"{_SETTINGS_PREFIX}/print_mode", 2)
+        settings.remove(f"{_SETTINGS_PREFIX}/two_up")
     for key in _LEGACY_KEYS:
         settings.remove(f"{_SETTINGS_PREFIX}/{key}")
     saved = str(settings.value(f"{_SETTINGS_PREFIX}/output_dir", "") or "")
@@ -399,7 +410,7 @@ def export_settings() -> dict:
         "auto_number": get_bool("auto_number"),
         "print_mode": (print_mode() or (0,))[0],
         "render_cache": get_bool("render_cache"),
-        "mirror_back": get_bool("mirror_back"),
+        "mirror_back": get_bool("mirror_back_v2"),
         "overview_basemap": str(get_setting("overview_basemap") or "opentopomap"),
         "overview_color": str(get_setting("overview_color") or "#c8005a"),
         "open_folder": get_bool("open_folder"),

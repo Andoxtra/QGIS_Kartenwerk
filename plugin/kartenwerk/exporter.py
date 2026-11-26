@@ -234,7 +234,7 @@ def export_sheets(
     back = sources.resolve(project, sources.IMAGERY, settings["back_basemap"], bbox, zone, hemisphere)
     ext = {side: ".jpg" if settings[f"{side}_format"] == "JPEG" else ".png" for side in layout.SIDES}
 
-    mirror_back = bool(settings.get("mirror_back", True))
+    mirror_back = bool(settings.get("mirror_back", False))
 
     # The user's own layers (e.g. a GPX route), stored per project.
     overlay_layers, missing_overlays = [], []

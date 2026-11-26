@@ -120,6 +120,61 @@ def safe_zone_violations(layout_):
     return bad
 
 
+def slot_violations(layout_, slots, geom):
+    """Items of a slot that leave their own sheet, or border items on any map picture."""
+    from qgis.PyQt.QtCore import QRectF
+    pages = layout_.pageCollection()
+    items = [it for it in layout_.items() if hasattr(it, "id") and callable(it.id) and it.id()]
+    bad = []
+    for slot in slots:
+        page_y = pages.page(slot.page).pos().y()
+        sheet = QRectF(slot.x0 - 0.01, page_y + slot.y0 - 0.01, geom.page_w + 0.02,
+                       geom.page_h + 0.02)
+        for it in items:
+            if it.id().startswith(slot.prefix) and not sheet.contains(it.sceneBoundingRect()):
+                bad.append(("outside its sheet", it.id()))
+    maps = [it.sceneBoundingRect().adjusted(0.3, 0.3, -0.3, -0.3) for it in items
+            if it.id().endswith("map_picture")]
+    for it in items:
+        if it.id().endswith("map_picture"):
+            continue
+        if any(it.sceneBoundingRect().intersects(m) for m in maps):
+            bad.append(("on a map", it.id()))
+    return bad
+
+
+def border_text_overlaps(layout_, prefix):
+    """Border texts that wrap (wider than their box) or touch a neighbour in their row."""
+    from qgis.PyQt.QtCore import Qt
+    left_a, right_a = int(Qt.AlignLeft), int(Qt.AlignRight)
+    extents = {}
+    bad = []
+    for name in ("title", "neighbor_top", "north", "scale", "neighbor_bottom", "coord",
+                 "source", "corner"):
+        item = layout_.itemById(prefix + name)
+        rect = item.sceneBoundingRect()
+        width = layout.text_width(item.text())
+        if width > rect.width() + 0.05 and not name.startswith("neighbor"):
+            bad.append((name, "wraps", round(width, 1), round(rect.width(), 1)))
+        align = int(item.hAlign())
+        if align & left_a:
+            extents[name] = (rect.left(), rect.left() + width)
+        elif align & right_a:
+            extents[name] = (rect.right() - width, rect.right())
+        else:
+            extents[name] = (rect.center().x() - width / 2, rect.center().x() + width / 2)
+    loc = layout_.itemById(prefix + "locator").sceneBoundingRect()
+    extents["locator"] = (loc.left(), loc.right())
+    for row in (("title", "neighbor_top", "north"),
+                ("scale", "neighbor_bottom", "coord", "locator"),
+                ("source", "corner", "locator")):
+        spans = sorted(extents[name] + (name,) for name in row)
+        for (a0, a1, a), (b0, b1, b) in zip(spans, spans[1:]):
+            if a1 > b0:
+                bad.append((a, b, round(a1 - b0, 1)))
+    return bad
+
+
 def runs(values, dark):
     """Centres of consecutive runs where dark(v) is true."""
     centres, start = [], None
@@ -147,24 +202,30 @@ def layout_checks(fmt, scale_denom):
     cell = QgsRectangle(440_000, 5_320_000, 440_000 + geom.cell_w, 5_320_000 + geom.cell_h)
     extent = QgsRectangle(cell.xMinimum() - geom.pad_w, cell.yMinimum() - geom.pad_h,
                           cell.xMaximum() + geom.pad_w, cell.yMaximum() + geom.pad_h)
-    sheet = {"sheet_id": "32N-R1234C0567", "utm_zone": 32, "hemisphere": "N", "sheet_no": 7,
-             "sheet_name": None, "row": 1234, "col": 567,
+    sheet = {"sheet_id": "32N-R1234C0567", "utm_zone": 32, "hemisphere": "N", "sheet_no": 17,
+             "sheet_name": "Schönenbach-Hinterzarten", "row": 1234, "col": 567,
              "e_min": cell.xMinimum(), "e_max": cell.xMaximum(),
              "n_min": cell.yMinimum(), "n_max": cell.yMaximum()}
     long_id = {"sheet_id": "32N-R1234C0568", "sheet_no": None, "sheet_name": None, "edge_value": 0}
     neighbour = {"north": {**long_id, "sheet_no": 3}, "south": long_id, "east": long_id, "west": None}
     info = {"extent": extent, "sheets": [sheet], "convergence": 1.23, "grid_magnetic": 2.34,
-            "year": 2026, "date": "2026-11-25"}
+            "year": 2026, "date": "2026-11-25", "mgrs": "32U MU"}
+    attribution = "© OpenTopoMap (CC-BY-SA) · © OpenStreetMap contributors"
     lay = layout.ensure_layout(project, force=True)
     image, _ = render.render_image(extent, [], utm, 254, cell=None)
     # unique per case: QGIS caches pictures by path
     img_path = config.cache_dir() / f"grid_only_{fmt}_{scale_denom}_{config.safe_mm():g}.png"
     render.save_image(image, img_path)
     for side in layout.SIDES:
-        layout.update_side(lay, side, sheet, img_path, neighbour, "© Test attribution", info)
+        layout.update_side(lay, side, sheet, img_path, neighbour, attribution, info)
 
     bad = safe_zone_violations(lay)
     check(f"{fmt}: all border items inside the {config.safe_mm():g} mm printer margin", not bad, bad[:5])
+    bad = slot_violations(lay, [layout.default_slot(s, (0.0, 0.0)) for s in layout.SIDES], geom)
+    check(f"{fmt}: border items stay off the map", not bad, bad[:5])
+    for side in layout.SIDES:
+        bad = border_text_overlaps(lay, f"{side}_")
+        check(f"{fmt}: {side} border texts fit without overlapping", not bad, bad[:5])
 
     page = QgsLayoutExporter(lay).renderPageToImage(0, QSize(), 254)  # 10 px per mm
     px = page.width() / geom.page_w
@@ -183,7 +244,7 @@ def layout_checks(fmt, scale_denom):
         for i, (front_slot, back_slot) in enumerate(slots):
             for side, slot in (("front", front_slot), ("back", back_slot)):
                 layout.update_side(n_up, side, {**sheet, "sheet_no": i + 1}, img_path, neighbour,
-                                   "© Test", info, slot)
+                                   attribution, info, slot)
         paper_w, paper_h = config.print_mode_paper(mode)
         pairs = (3 + cols * rows - 1) // (cols * rows)
         size = n_up.pageCollection().page(0).pageSize()
@@ -192,6 +253,15 @@ def layout_checks(fmt, scale_denom):
               and abs(size.width() - paper_w) < 0.01 and abs(size.height() - paper_h) < 0.01)
         bad = safe_zone_violations(n_up)
         check(f"{fmt}: {sheets}-per-page items inside the safe zone", not bad, bad[:5])
+        bad = slot_violations(n_up, [s for pair in slots for s in pair], geom)
+        check(f"{fmt}: {sheets}-per-page items stay on their own sheet, off the maps",
+              not bad, bad[:5])
+        bad = [b for pair in slots for s in pair for b in border_text_overlaps(n_up, s.prefix)]
+        check(f"{fmt}: {sheets}-per-page border texts fit without overlapping", not bad, bad[:5])
+        # Duplex turns the paper about its vertical axis: columns swap, rows stay.
+        check(f"{fmt}: {sheets}-per-page backs mirrored across the paper", all(
+            abs(b.x0 - (paper_w - f.x0 - geom.page_w)) < 0.01 and b.y0 == f.y0
+            for f, b in slots), [(round(f.x0, 1), round(b.x0, 1)) for f, b in slots])
         front_b = slots[1][0].y0
         back_b = slots[1][1].y0
         check(f"{fmt}: {sheets}-per-page back sits behind its front", front_b == back_b
@@ -354,7 +424,7 @@ def feature_checks(work: Path):
         check(f"overview list for {n_rows * n_cols} sheets fits ({expected_pages} page(s))",
               pages == expected_pages, pages)
 
-    # --- back side mirrored (default) or normal ------------------------------
+    # --- back side mirrored or normal (default) ------------------------------
     nb = {"west": {"sheet_id": "32N-R1234C0566", "sheet_no": 6, "sheet_name": None},
           "east": {"sheet_id": "32N-R1234C0568", "sheet_no": 8, "sheet_name": None}}
     msheet = {"sheet_id": "32N-R1234C0567", "utm_zone": 32, "hemisphere": "N", "sheet_no": 7,

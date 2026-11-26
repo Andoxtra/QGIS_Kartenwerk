@@ -54,6 +54,10 @@ def main() -> int:
         for key, value in {"page_format": "A5", "scale": 15000, "overlap": 5}.items():
             config.set_setting(key, value)
         config.set_setting("front_source", "UTM 32N · old text")  # version-1 key
+        config.set_setting("mirror_back", True)  # stored by every OK before mirroring became optional-off
+        QgsSettings().remove("kartenwerk/mirror_back_v2")
+        config.set_setting("two_up", True)  # became print mode 2
+        QgsSettings().remove("kartenwerk/print_mode")
         project = QgsProject.instance()
         project.clear()
         project.setFileName(str(work / "p.qgz"))
@@ -61,6 +65,10 @@ def main() -> int:
         plugin = KartenwerkPlugin(get_iface())
         plugin.initGui()
         check("legacy settings removed", QgsSettings().value("kartenwerk/front_source") is None)
+        check("old mirror setting removed", QgsSettings().value("kartenwerk/mirror_back") is None)
+        check("two sheets per page migrated to print mode 2",
+              QgsSettings().value("kartenwerk/two_up") is None and config.get_int("print_mode") == 2)
+        config.set_setting("print_mode", 0)
         actions = [a.text() for a in plugin.actions]
         check("actions", actions == ["Draw work area", "Generate grid", "Select sheets",
                                      "Number sheets", "Name sheet", "Export selection",
@@ -167,11 +175,11 @@ def main() -> int:
         dlg.overview_color.setColor(QColor("#00a0ff"))
         check("overview colour returned", dlg.values()["overview_color"] == "#00a0ff"
               and dlg.values()["overview_basemap"] == "opentopomap")
-        check("mirror back: default on", dlg.mirror_back.isChecked()
-              and dlg.values()["mirror_back"] is True)
-        dlg.mirror_back.setChecked(False)
-        check("mirror back: off returned", dlg.values()["mirror_back"] is False)
+        check("mirror back: default off, old stored value ignored",
+              not dlg.mirror_back.isChecked() and dlg.values()["mirror_back_v2"] is False)
         dlg.mirror_back.setChecked(True)
+        check("mirror back: on returned", dlg.values()["mirror_back_v2"] is True)
+        dlg.mirror_back.setChecked(False)
         check("printer margin choices", [dlg.margin_combo.itemData(i) for i in
                                          range(dlg.margin_combo.count())] == [5, 4, 3])
         check("dialog values complete", {"overlap", "printer_margin", "print_mode", "render_cache",

@@ -14,10 +14,9 @@ or A6) at a selectable scale (default 1:15 000), ready for double-sided printing
   north, the UTM zone and MGRS square, neighbour sheets, a locator diagram,
   attribution and print date; the map itself stays free of text. Your own
   layers, such as a GPX route, can be drawn on top.
-- **Back:** the same extent as aerial imagery. By default it is **mirrored
-  horizontally**, so it lies exactly behind the front when the sheet is held up
-  against the light; switch off **Mirror the back side** to print it normally
-  oriented, easier to read on its own.
+- **Back:** the same extent as aerial imagery, normally oriented by default.
+  Switch on **Mirror the back side** to flip it horizontally, so it lies exactly
+  behind the front when the sheet is held up against the light.
 - **Selection:** draw a work area, generate a sheet grid buffered by one cell,
   then pick the sheets you actually want to print.
 - **Worldwide:** coordinates are always metric WGS 84 / UTM with the zone chosen
@@ -180,7 +179,7 @@ count.
 | Resolution (dpi) | `300` | Render and PDF resolution. |
 | Front/Back format | `PNG` | `PNG` (lossless) or `JPEG` (faster, smaller). |
 | JPEG quality | `92` | 50–100. |
-| Mirror the back side | on | On: the aerial back is mirrored left↔right and lines up with the front when held against the light. Off: the back is printed normally oriented, like a second map. |
+| Mirror the back side | off | On: the aerial back is mirrored left↔right and lines up with the front when held against the light. Off: the back is printed normally oriented, like a second map. |
 | Print file | None | Also writes a print file with several sheets combined on one larger paper with cut marks: `2 × A5 on A4`, `2 × A6 on A5` or `4 × A6 on A4`. A2, A3 and A4 print at actual size. |
 | Duplex offset | 0 / 0 mm | Moves all back-side content to compensate a printer's duplex shift; separate values for the sheet PDFs and the print file. See [Printing](#printing). |
 
@@ -204,13 +203,15 @@ settings, overlays in the project.
 **Example:** [`examples/Sheet_05_32N-R2985C0167.pdf`](examples/Sheet_05_32N-R2985C0167.pdf)
 is one exported sheet (Black Forest, A5, 1:15 000, 300 dpi, 5 % overlap): the
 TopPlusOpen topographic map on the front and the DOP20 aerial image, mirrored,
-on the back. Its map content is licensed by BKG and LGL BW, see
-[NOTICE.md](NOTICE.md).
+on the back. [`examples/Print_4-per-page_A4_A6.pdf`](examples/Print_4-per-page_A4_A6.pdf)
+is the print file for home printers with four neighbouring A6 sheets (Furtwangen,
+1:15 000) on one A4 page, back normally oriented. The map content of both is
+licensed by BKG and LGL BW, see [NOTICE.md](NOTICE.md).
 
 ```
 output/
 ├── Overview.pdf                    # miniature map of all sheets (north up) + list of all sheets
-├── Sheet_01_32N-R1564C0088.pdf     # 2 pages: front topo, back mirrored imagery
+├── Sheet_01_32N-R1564C0088.pdf     # 2 pages: front topo, back imagery
 ├── Sheet_02_32N-R1564C0089.pdf
 ├── all_sheets.pdf                  # overview + all sheets (needs pdfunite or Ghostscript)
 ├── Print_2-per-page_A4.pdf         # optional: two A5 sheets per A4 page, for home printers
@@ -337,17 +338,21 @@ sheet, switch to the neighbour once you cross the dashed line. They are not
 cut lines. With **Sheet overlap: None** they disappear and the sheets meet
 exactly at the frame.
 
-**Mirrored back (default):** the back image (basemap and grid lines) is flipped
+**Normal back (default):** the back is laid out exactly like the front, just
+with the aerial image, including the full north block and overlay labels. The
+duplex offset still applies, so the frames of front and back line up.
+
+**Mirrored back** (Settings → Printing → Mirror the back side: on): the back image (basemap and grid lines) is flipped
 in memory with `QImage.mirrored(True, False)` before it is saved; all border
 text is drawn unflipped, so it stays readable. The left/right neighbours, the
 easting labels and the locator are mirrored to match the image; the north block
 shows only the arrow, since angles measured on a mirrored image are reversed,
 and overlay labels are left out on the back.
 
-**Normal back** (Settings → Printing → Mirror the back side: off): the back is
-laid out exactly like the front, just with the aerial image, including the full
-north block and overlay labels. The duplex offset still applies, so the frames
-of front and back line up.
+On small pages (A6) the border texts are fitted to the space available: if the
+sheet title or the north block does not fit, less important details (the sheet
+ID, the "aerial image" note, the "Grid north" lead-in) are left out first, and
+the text is made slightly smaller only if that is still not enough.
 
 ---
 
@@ -357,7 +362,7 @@ of front and back line up.
 QGIS_Kartenwerk/
 ├── kartenwerk.qgz              # example QGIS project
 ├── kartenwerk.gpkg             # work area (+ generated grid)
-├── examples/                   # an example sheet PDF (map data © BKG / LGL BW)
+├── examples/                   # example sheet and print-file PDFs (map data © BKG / LGL BW)
 ├── setup_project.py            # rebuild the project (keeps work-area polygons)
 ├── install_plugin.py           # install into a QGIS profile / build ZIP
 ├── plugin/kartenwerk/

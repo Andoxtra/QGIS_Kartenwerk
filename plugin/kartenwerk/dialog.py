@@ -203,7 +203,7 @@ class SettingsDialog(QDialog):
 
         self.mirror_back = QCheckBox("Mirror the back side (lines up with the front when held "
                                      "against the light)")
-        self.mirror_back.setChecked(config.get_bool("mirror_back"))
+        self.mirror_back.setChecked(config.get_bool("mirror_back_v2"))
         self.mirror_back.setToolTip(
             "On: the aerial image on the back is mirrored left↔right, so its features lie exactly "
             "behind the same features on the front.\nOff: the back shows the aerial image "
@@ -515,7 +515,7 @@ class SettingsDialog(QDialog):
             "auto_number": self.auto_number.isChecked(),
             "print_mode": int(self.print_mode.currentData() or 0),
             "render_cache": self.render_cache.isChecked(),
-            "mirror_back": self.mirror_back.isChecked(),
+            "mirror_back_v2": self.mirror_back.isChecked(),
             "overview_basemap": self.overview_combo.currentData() or "opentopomap",
             "overview_color": self.overview_color.color().name(),
             "duplex_dx": self.offset_dx.value(),

@@ -1,4 +1,4 @@
-"""Print layout (page 1: front topo, page 2: mirrored aerial back) and the overview sheet.
+"""Print layout (page 1: front topo, page 2: aerial back) and the overview sheet.
 
 The map itself is kept free of text. The white border carries, inside the
 printer margin (config.safe_mm() from the paper edge):
@@ -13,11 +13,12 @@ from __future__ import annotations
 import datetime as _dt
 import html
 import math
+import re
 import uuid
 from pathlib import Path
 
 from qgis.PyQt.QtCore import QPointF, QRect, QRectF, Qt
-from qgis.PyQt.QtGui import QColor, QFont, QImage, QPainter, QPen, QPolygonF
+from qgis.PyQt.QtGui import QColor, QFont, QImage, QPainter, QPen, QPolygonF, QTextDocument
 from qgis.core import (
     QgsFillSymbol,
     QgsLayoutExporter,
@@ -36,7 +37,7 @@ from qgis.core import (
 from . import config, crs as crs_mod
 
 LAYOUT_NAME = "Kartenwerk"
-LAYOUT_VERSION = "6"  # bump when the border design changes, so saved layouts are rebuilt
+LAYOUT_VERSION = "7"  # bump when the border design changes, so saved layouts are rebuilt
 LEGACY_LAYOUTS = ("Vorderseite", "Rueckseite")
 SIDES = ("front", "back")  # page 0, page 1
 _MM = QgsUnitTypes.LayoutMillimeters
@@ -49,6 +50,9 @@ _LOCATOR_H = 6.4
 _LOCATOR_MAX_W = 30.0  # reserved at the bottom right
 _SIDE_LABEL_LEN = 30.0  # rotated neighbour label box
 _KM_ROW_H = 1.8
+_GAP = 1.5  # minimum space between two border texts in one row
+# Measured text widths come out up to ~7 % narrower than QGIS renders them.
+_TEXT_SLACK = 1.1
 
 # Text/lane scale of the page being built (config.TEXT_SCALE); set by _use_scale().
 _K = 1.0
@@ -162,6 +166,57 @@ def _rect(layout, item_id: str, x: float, y: float, w: float, h: float, page: in
     return shape
 
 
+_MEASURE_DPI = 720
+_measure_device: QImage | None = None
+
+
+def text_width(html_text: str) -> float:
+    """Width in mm of a one-line HTML label text, with a margin for rendering differences."""
+    global _measure_device
+    if _measure_device is None:
+        _measure_device = QImage(1, 1, QImage.Format_RGB32)
+        dpm = round(_MEASURE_DPI / 0.0254)
+        _measure_device.setDotsPerMeterX(dpm)
+        _measure_device.setDotsPerMeterY(dpm)
+    doc = QTextDocument()
+    doc.setDocumentMargin(0)
+    doc.setDefaultFont(_font())
+    doc.documentLayout().setPaintDevice(_measure_device)
+    doc.setHtml(html_text)
+    return doc.idealWidth() * 25.4 / _MEASURE_DPI * _TEXT_SLACK
+
+
+def _scale_html(html_text: str, factor: float) -> str:
+    """Multiply every font size in ``html_text`` by ``factor``."""
+    if factor == 1.0:
+        return html_text
+    return re.sub(r"font-size:([0-9.]+)pt",
+                  lambda m: f"font-size:{float(m.group(1)) * factor:.2f}pt", html_text)
+
+
+def _fit(variants: list[str], max_w: float, min_factor: float = 0.85,
+         last_min_factor: float = 0.7) -> str:
+    """The first variant (most complete first) that fits ``max_w`` mm, shrunk if needed."""
+    for index, variant in enumerate(variants):
+        last = index == len(variants) - 1
+        factor = 1.0
+        while factor >= (last_min_factor if last else min_factor) - 1e-9:
+            scaled = _scale_html(variant, factor)
+            if text_width(scaled) <= max_w:
+                return scaled
+            factor -= 0.05
+    return _scale_html(variants[-1], last_min_factor)
+
+
+def _set_x(layout: QgsPrintLayout, item_id: str, x: float, w: float, slot: Slot) -> None:
+    """Move a border item to x (sheet layout mm, without duplex offset) and set its width."""
+    item = layout.itemById(item_id)
+    size = item.sizeWithUnits()
+    item.attemptResize(QgsLayoutSize(max(w, 1.0), size.height(), _MM))
+    pos = item.pagePositionWithUnits()  # y already includes the duplex offset
+    item.attemptMove(QgsLayoutPoint(x + slot.dx, pos.y(), _MM), True, False, slot.page)
+
+
 def scale_bar_length(geom: config.PageGeometry) -> tuple[float, float]:
     """(ground metres, paper mm) of the scale bar: the longest round length that fits."""
     limit = min(80.0 * geom.text_scale, geom.page_w * 0.25)
@@ -233,8 +288,8 @@ def _add_side(layout: QgsPrintLayout, slot: Slot, geom: config.PageGeometry) -> 
            page=page, align=Qt.AlignRight)
 
     # --- sides: neighbours, rotated to read upwards on both sides --------------
-    lane_cx_left = (safe + ox + geom.map_x) / 2.0
-    lane_cx_right = ox + geom.page_w - lane_cx_left
+    lane_cx_left = ox + (safe + geom.map_x) / 2.0
+    lane_cx_right = ox + geom.page_w - (safe + geom.map_x) / 2.0
     cy = map_y + geom.map_h / 2.0
     length = u(_SIDE_LABEL_LEN)
     for name, cx in (("neighbor_left", lane_cx_left), ("neighbor_right", lane_cx_right)):
@@ -322,10 +377,11 @@ def n_up_layout(project: QgsProject, count: int,
     """Layout with several sheets placed in the grid of a print-file mode on one paper.
 
     ``mode`` is a config.PRINT_MODES entry (sheets, paper, orientation, cols, rows).
-    Page 2k holds the fronts of the sheets in group k, page 2k+1 their backs in the
-    same positions: duplex printing turns the paper about its vertical axis, so every
-    back lands behind its front. Returns the layout (not added to the project) and the
-    (front slot, back slot) of each sheet.
+    Page 2k holds the fronts of the sheets in group k, page 2k+1 their backs. Duplex
+    printing turns the paper about its vertical axis ('flip on long edge' for portrait,
+    'flip on short edge' for landscape paper), so rows stay and columns swap: the back
+    of the sheet in column c goes to column cols-1-c, right behind its front. Returns
+    the layout (not added to the project) and the (front slot, back slot) of each sheet.
     """
     geom = config.page_geometry()
     _use_scale(geom)
@@ -355,8 +411,9 @@ def n_up_layout(project: QgsProject, count: int,
         row, col = divmod(pos, cols)
         x = grid_x0 + col * geom.page_w
         y = grid_y0 + row * geom.page_h
+        back_x = paper_w - x - geom.page_w  # mirrored about the paper centre
         front = Slot("front", 2 * pair, y, f"s{i}f_", x0=x)
-        back = Slot("back", 2 * pair + 1, y, f"s{i}b_", dx=dx, dy=dy, x0=x)
+        back = Slot("back", 2 * pair + 1, y, f"s{i}b_", dx=dx, dy=dy, x0=back_x)
         _add_side(layout, front, geom)
         _add_side(layout, back, geom)
         slots.append((front, back))
@@ -409,7 +466,8 @@ def _neighbour_html(neighbour: dict | None, arrow: str) -> str:
                  color="#000000" if numbered else GREY)
 
 
-def _title_html(sheet: dict, side: str, mirrored: bool | None = None) -> str:
+def _title_html(sheet: dict, side: str, mirrored: bool = False, *, with_id: bool = True,
+                with_note: bool = True) -> str:
     number = sheet_number_text(sheet)
     name = str(sheet.get("sheet_name") or "").strip()
     sheet_id = html.escape(str(sheet["sheet_id"]))
@@ -418,10 +476,11 @@ def _title_html(sheet: dict, side: str, mirrored: bool | None = None) -> str:
         parts.append(_span(number, 12, bold=True) + "&nbsp;&nbsp;")
     if name:
         parts.append(_span(html.escape(name), 9 if number else 10, bold=True) + "&nbsp;&nbsp;")
-    parts.append(_span(sheet_id, 6.5, color=GREY) if (number or name)
-                 else _span(sheet_id, 9, bold=True))
-    if side == "back":
-        mirrored = True if mirrored is None else mirrored
+    if not (number or name):
+        parts.append(_span(sheet_id, 9, bold=True))
+    elif with_id:
+        parts.append(_span(sheet_id, 6.5, color=GREY))
+    if side == "back" and with_note:
         note = "aerial image, mirrored for duplex" if mirrored else "aerial image"
         parts.append(_span(f"&nbsp;· {note}", 6.5, color=GREY))
     return "".join(parts)
@@ -431,7 +490,7 @@ def _angle_text(value: float) -> str:
     return f"{abs(value):.1f}° {'E' if value >= 0 else 'W'}"
 
 
-def _north_html(side: str, info: dict, mirrored: bool = False) -> str:
+def _north_html(side: str, info: dict, mirrored: bool = False, compact: bool = False) -> str:
     """North arrow with true/magnetic north; only the arrow on a mirrored page."""
     arrow = _span("▲ N", 10, bold=True)
     if mirrored:  # angles measured on a mirrored image would point the wrong way
@@ -439,7 +498,8 @@ def _north_html(side: str, info: dict, mirrored: bool = False) -> str:
     parts = [f"true N {_angle_text(-info['convergence'])}"]
     if info.get("grid_magnetic") is not None:
         parts.append(f"magnetic N {_angle_text(info['grid_magnetic'])} ({info['year']})")
-    small = _span("Grid north ↑ · " + " · ".join(parts) + "&nbsp;&nbsp;", 5, color=GREY)
+    lead = "" if compact else "Grid north ↑ · "
+    small = _span(lead + " · ".join(parts) + "&nbsp;&nbsp;", 5, color=GREY)
     return small + arrow
 
 
@@ -478,8 +538,12 @@ def _remove_items(layout: QgsPrintLayout, prefix: str) -> None:
 
 
 def _add_km_labels(layout, slot: Slot, extent, geom: config.PageGeometry,
-                   mirrored: bool = False) -> None:
-    """Kilometre labels in the border at every 1 km grid line (rebuilt per sheet)."""
+                   mirrored: bool = False, side_text_len: float = 0.0) -> None:
+    """Kilometre labels in the border at every 1 km grid line (rebuilt per sheet).
+
+    ``side_text_len``: length in mm of the longest rotated side-neighbour text; the
+    northing labels keep clear of it.
+    """
     p = f"{slot.prefix}km_"
     page, y0 = slot.page, slot.y0
     ox = slot.x0
@@ -512,7 +576,8 @@ def _add_km_labels(layout, slot: Slot, extent, geom: config.PageGeometry,
         y = geom.map_y + (extent.yMaximum() - n) * sy
         h = u(2.4)
         # Keep clear of the rotated side neighbours and of the page corners.
-        if abs(y - mid) > u(_SIDE_LABEL_LEN / 2 - 6.0) and y - h / 2 >= geom.map_y - u(1.0) \
+        clear = max(u(_SIDE_LABEL_LEN / 2 - 6.0), side_text_len / 2 + h / 2 + u(0.5))
+        if abs(y - mid) > clear and y - h / 2 >= geom.map_y - u(1.0) \
                 and y + h / 2 <= geom.bottom + u(0.2):
             text = _km_html(n)
             _label(layout, f"{p}n{i}l", text, ox + safe, y0 + y - h / 2, lane_w, h, page=page,
@@ -624,23 +689,42 @@ def update_side(
     picture.setPicturePath(str(image_path))
     picture.refreshPicture()
 
-    # A mirrored back (default) lines up with the front when held against the light.
-    mirrored = side == "back" and bool(info.get("mirror_back", True))
-    layout.itemById(p + "title").setText(_title_html(sheet, side, mirrored))
-    layout.itemById(p + "north").setText(_north_html(side, info, mirrored))
-    layout.itemById(p + "coord").setText(_coord_html(sheet, info))
-    layout.itemById(p + "corner").setText(_corner_html(extent))
-    layout.itemById(p + "source").setText(_source_html(source_text, info["date"]))
-    layout.itemById(p + "neighbor_top").setText(_neighbour_html(neighbour.get("north"), "▲"))
-    layout.itemById(p + "neighbor_bottom").setText(_neighbour_html(neighbour.get("south"), "▼"))
+    # A mirrored back lines up with the front when held against the light.
+    mirrored = side == "back" and bool(info.get("mirror_back", False))
+    top_html = _neighbour_html(neighbour.get("north"), "▲")
+    bottom_html = _neighbour_html(neighbour.get("south"), "▼")
+    layout.itemById(p + "neighbor_top").setText(top_html)
+    layout.itemById(p + "neighbor_bottom").setText(bottom_html)
     # Side labels are rotated to read upwards: ▲ then points left, ▼ points right.
     # On a mirrored back east and west swap sides.
     west, east = neighbour.get("west"), neighbour.get("east")
     left, right = (east, west) if mirrored else (west, east)
-    layout.itemById(p + "neighbor_left").setText(_neighbour_html(left, "▲"))
-    layout.itemById(p + "neighbor_right").setText(_neighbour_html(right, "▼"))
+    left_html, right_html = _neighbour_html(left, "▲"), _neighbour_html(right, "▼")
+    layout.itemById(p + "neighbor_left").setText(left_html)
+    layout.itemById(p + "neighbor_right").setText(right_html)
 
-    _add_km_labels(layout, slot, extent, geom, mirrored)
+    # Top row: the north neighbour stays centred; title and north block get the
+    # space left and right of it, dropping detail or shrinking if they do not fit.
+    ox = slot.x0
+    cx = ox + geom.page_w / 2.0
+    gap = u(_GAP)
+    half = text_width(top_html) / 2.0
+    title_x, north_r = ox + geom.map_x, ox + geom.right
+    title_w = cx - half - gap - title_x
+    north_x = cx + half + gap
+    variants = [_title_html(sheet, side, mirrored)]
+    if side == "back":
+        variants.append(_title_html(sheet, side, mirrored, with_note=False))
+    variants.append(_title_html(sheet, side, mirrored, with_id=False, with_note=False))
+    layout.itemById(p + "title").setText(_fit(variants, title_w))
+    _set_x(layout, p + "title", title_x, title_w, slot)
+    layout.itemById(p + "north").setText(_fit(
+        [_north_html(side, info, mirrored), _north_html(side, info, mirrored, compact=True)],
+        north_r - north_x))
+    _set_x(layout, p + "north", north_x, north_r - north_x, slot)
+
+    _add_km_labels(layout, slot, extent, geom, mirrored,
+                   max(text_width(left_html), text_width(right_html)))
     _shift(layout, f"{p}km_", slot.dx, slot.dy)
 
     # Locator diagram, right-aligned in its reserved box.
@@ -662,6 +746,29 @@ def update_side(
         QgsLayoutPoint(slot.x0 + geom.right - w, slot.y0 + geom.bottom + u(0.3)
                        + (u(_LOCATOR_H) - h) / 2, _MM), True, False, slot.page)
     _shift(layout, p + "locator", slot.dx, slot.dy)
+
+    # Bottom rows. Row B: scale · south neighbour (centred) · UTM zone; row C:
+    # attribution · SW corner. Zone and corner end before the space reserved for
+    # the widest locator, or, where that is too tight (A6), right next to the
+    # actual locator; the attribution takes what is left of the corner.
+    coord_html = _coord_html(sheet, info)
+    corner_html = _corner_html(extent)
+    source_html = _source_html(source_text, info["date"])
+    coord_w, corner_w = text_width(coord_html), text_width(corner_html)
+    source_w = text_width(source_html)
+    south_r = cx + text_width(bottom_html) / 2.0
+    src_x = ox + geom.map_x
+    coord_r = ox + geom.right - u(_LOCATOR_MAX_W) - u(2.0)
+    if coord_r - coord_w < south_r + gap or src_x + source_w + gap > coord_r - corner_w:
+        coord_r = max(coord_r, ox + geom.right - w - u(2.0))
+    coord_w = min(coord_w, coord_r - south_r - gap)
+    layout.itemById(p + "coord").setText(_fit([coord_html], coord_w))
+    _set_x(layout, p + "coord", coord_r - coord_w, coord_w, slot)
+    layout.itemById(p + "corner").setText(corner_html)
+    _set_x(layout, p + "corner", coord_r - corner_w, corner_w, slot)
+    source_max = coord_r - corner_w - gap - src_x
+    layout.itemById(p + "source").setText(_fit([source_html], source_max))
+    _set_x(layout, p + "source", src_x, source_max, slot)
     return [path]
 
 

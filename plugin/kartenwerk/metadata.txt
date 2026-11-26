@@ -1,12 +1,12 @@
 [general]
 name=Kartenwerk
 qgisMinimumVersion=3.28
-description=Printable duplex map series anywhere in the world: topographic front, mirrored aerial back, metric UTM grid.
+description=Printable duplex map series anywhere in the world: topographic front, aerial back (optionally mirrored), metric UTM grid.
 version=2.2.0
 author=Chappie147
 # Required by plugins.qgis.org before uploading (publicly visible):
 email=
-about=Draw a work area, generate a sheet grid in the matching WGS 84 / UTM zone, select the sheets you want and export two-page PDFs: a topographic map with a numbered 1 km UTM grid on the front and aerial imagery mirrored for duplex printing on the back. The border shows a scale bar, grid/true/magnetic north (World Magnetic Model), the MGRS square, neighbour sheets and a locator diagram, all inside a printer-safe margin. Your own layers such as a GPX route can be drawn on the map, and a duplex test page compensates printer shift. Page formats A2–A6, any scale from 1:5 000 to 1:100 000, optional sheet overlap, and an optional print file combining several sheets on one larger paper (2 × A5 on A4; 2 × A6 on A5; 4 × A6 on A4) for home printers. Worldwide sources (OpenTopoMap, Esri World Imagery) with automatic national upgrades (DE, CH, AT, NL, FR, US). Optional: pdfunite or Ghostscript for one merged PDF.
+about=Draw a work area, generate a sheet grid in the matching WGS 84 / UTM zone, select the sheets you want and export two-page PDFs: a topographic map with a numbered 1 km UTM grid on the front and aerial imagery on the back, optionally mirrored to line up with the front against the light. The border shows a scale bar, grid/true/magnetic north (World Magnetic Model), the MGRS square, neighbour sheets and a locator diagram, all inside a printer-safe margin. Your own layers such as a GPX route can be drawn on the map, and a duplex test page compensates printer shift. Page formats A2–A6, any scale from 1:5 000 to 1:100 000, optional sheet overlap, and an optional print file combining several sheets on one larger paper (2 × A5 on A4; 2 × A6 on A5; 4 × A6 on A4) for home printers. Worldwide sources (OpenTopoMap, Esri World Imagery) with automatic national upgrades (DE, CH, AT, NL, FR, US). Optional: pdfunite or Ghostscript for one merged PDF.
 homepage=https://github.com/Andoxtra/QGIS_Kartenwerk
 repository=https://github.com/Andoxtra/QGIS_Kartenwerk
 tracker=https://github.com/Andoxtra/QGIS_Kartenwerk/issues
@@ -27,7 +27,7 @@ changelog=
     - Printer margin setting (5/4/3 mm) and a more compact bottom border: bigger map
     - Locator marks where a large series continues; overview page explains the dashed lines
     - Scale is a number field: any value from 1:5 000 to 1:100 000 (rounded to 500)
-    - Option to print the aerial back normally oriented instead of mirrored
+    - Aerial back normally oriented by default; mirroring for holding against the light is an option
     - Overview page shows a miniature map (OpenTopoMap by default, colour of outlines selectable); the sheet list always fits
     2.1.0
     - Code released into the public domain (Unlicense); map data keeps its providers' licences (NOTICE.md)
